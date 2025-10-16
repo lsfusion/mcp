@@ -45,4 +45,4 @@ if __name__ == "__main__":
         mcp.run("stdio")
     else:
         # Production HTTP transport (host/port from MCP_HOST and MCP_PORT env vars)
-        mcp.run("sse")
+        mcp.run("streamable-http", mount_path="/mcp")
