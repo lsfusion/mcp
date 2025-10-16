@@ -1,0 +1,33 @@
+
+import os
+
+# === Environment variables ===
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")
+PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "lsfusion")
+PINECONE_NAMESPACE = os.environ.get("PINECONE_NAMESPACE", "")
+
+# Embedding model
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+
+# Metadata keys
+TEXT = "text"
+SOURCETYPE = "sourceType"
+
+SOURCETYPE_DOCUMENTATION = "documentation"
+SOURCETYPE_DOCUMENTATION_PARADIGM = "paradigm"
+SOURCETYPE_DOCUMENTATION_HOWTO = "how-to"
+SOURCETYPE_DOCUMENTATION_LANGUAGE = "language"
+SOURCETYPE_DOCUMENTATION_TUTORIAL = "tutorial"
+SOURCETYPE_ARTICLES = "articles"
+SOURCETYPE_TALKS = "talks"
+
+# TopK per source type (mirrors your Java setup, but without 'system')
+TOP_K = {
+    f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_PARADIGM}": 3,
+    f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_HOWTO}": 3,
+    f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_LANGUAGE}": 3,
+    f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_TUTORIAL}": 3,
+    SOURCETYPE_ARTICLES: 3,
+    SOURCETYPE_TALKS: 3,
+}

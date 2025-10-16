@@ -1,0 +1,22 @@
+version: "3.9"
+
+services:
+  mcp:
+    # Production image pulled from GitHub Container Registry (GHCR)
+    image: ghcr.io/lsfusion/mcp:latest
+
+    # For local development (uncomment to build locally instead of pulling from GHCR)
+    # build: .
+
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PINECONE_API_KEY: ${PINECONE_API_KEY}
+      PINECONE_INDEX: ${PINECONE_INDEX:-lsfusion}
+      PINECONE_NAMESPACE: ${PINECONE_NAMESPACE:-""}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-large}
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
+      MCP_PORT: ${MCP_PORT:-8000}
+
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
