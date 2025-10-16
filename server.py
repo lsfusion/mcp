@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 from typing import List, Dict, Any
+import os
 
 # FastMCP implements both stdio and Streamable HTTP transports
 from mcp.server.fastmcp import FastMCP
@@ -8,8 +9,15 @@ from mcp.server.fastmcp import FastMCP
 # Import tools; keep this file minimal so you can add more tools later
 from tools.rag_retrieve import retrieve_docs
 
-# A generic server name to host multiple tools
-mcp = FastMCP("lsfusion-mcp")
+
+# === Initialize MCP server ===
+mcp = FastMCP(
+    name="lsfusion-mcp",
+    host=os.getenv("MCP_HOST", "0.0.0.0"),
+    port=int(os.getenv("MCP_PORT", "8000")),
+    streamable_http_path="/mcp",
+    sse_path="/mcp/sse",
+)
 
 
 # === Tool: retrieve_docs ===
@@ -30,19 +38,8 @@ def retrieve_docs_tool(query: str) -> List[Dict[str, Any]]:
 
 
 if __name__ == "__main__":
-    import argparse
-
-# FastMCP reads MCP_HOST and MCP_PORT from environment for HTTP transport
-
-    parser = argparse.ArgumentParser(description="MCP server for lsfusion tools")
-    parser.add_argument("transport", choices=["stdio", "http"], nargs="?", default="stdio")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8000)
-    args = parser.parse_args()
-
-    if args.transport == "stdio":
-        # Local development: MCP over stdio
-        mcp.run("stdio")
-    else:
-        # Production HTTP transport (host/port from MCP_HOST and MCP_PORT env vars)
-        mcp.run("streamable-http", mount_path="/mcp")
+    # transport = os.getenv("MCP_TRANSPORT", "stdio")
+    # if transport == "stdio":
+    #     mcp.run("stdio")
+    # else:
+    mcp.run("streamable-http")
