@@ -17,7 +17,7 @@ COPY --from=base /usr/local/lib/python3.12 /usr/local/lib/python3.12
 COPY --from=base /usr/local/bin /usr/local/bin
 COPY --from=base /app /app
 
-# Non-root user for security reasons
+# Non-root user for security
 RUN useradd -u 10001 -m appuser
 USER appuser
 
