@@ -35,6 +35,7 @@ def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
 
 
 if __name__ == "__main__":
+    retrieve_docs("FORM x PROPERTIES y")
     # transport = os.getenv("MCP_TRANSPORT", "stdio")
     # if transport == "stdio":
     #     mcp.run("stdio")
