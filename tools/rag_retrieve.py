@@ -1,6 +1,6 @@
-
 from __future__ import annotations
-from typing import List, Dict, Any
+from typing import List
+from pydantic import BaseModel
 
 from openai import OpenAI
 from pinecone import Pinecone
@@ -16,14 +16,30 @@ from settings import (
     TOP_K,
 )
 
-# Initialized once per process. In serverless, ensure reuse.
+# ====== Pydantic models ======
+class DocItem(BaseModel):
+    """Single retrieved document item."""
+    source: str
+    text: str
+    score: float
+
+
+class RetrieveDocsOutput(BaseModel):
+    """Structured response containing a list of retrieved document items."""
+    docs: List[DocItem]
+
+
+# ====== Initialization ======
 client = OpenAI(api_key=OPENAI_API_KEY)
 pc = Pinecone(api_key=PINECONE_API_KEY)
 index = pc.Index(PINECONE_INDEX)
 
 
 def _chunk_by_words(text: str, max_words: int = 3000) -> List[str]:
-    """Split text into ~max_words chunks, space-delimited. No overlap."""
+    """
+    Split text into space-delimited chunks with up to `max_words` words.
+    Used to keep embedding requests within model limits.
+    """
     words = text.split()
     if len(words) <= max_words:
         return [text]
@@ -31,16 +47,20 @@ def _chunk_by_words(text: str, max_words: int = 3000) -> List[str]:
 
 
 def _get_embedding(text: str) -> List[float]:
-    """Create embeddings for the query; mean-pool across chunks with L2 normalization per chunk."""
+    """
+    Generate an averaged embedding vector for the given text.
+    Each chunk is L2-normalized before averaging.
+    """
     chunks = _chunk_by_words(text, 3000)
     resp = client.embeddings.create(model=EMBEDDING_MODEL, input=chunks)
 
+    # Single chunk: return as-is
     if len(resp.data) == 1:
         return list(resp.data[0].embedding)
 
+    # Average across normalized chunk embeddings
     dim = len(resp.data[0].embedding)
     acc = [0.0] * dim
-
     for datum in resp.data:
         vec = list(datum.embedding)
         norm = (sum(v * v for v in vec) ** 0.5) or 1.0
@@ -51,30 +71,33 @@ def _get_embedding(text: str) -> List[float]:
     return [v / n for v in acc]
 
 
-def retrieve_docs(query: str) -> List[Dict[str, Any]]:
+def retrieve_docs(query: str) -> RetrieveDocsOutput:
     """
-    Query Pinecone with an OpenAI embedding for the given query.
-    Returns a list of { source, text, score } sorted by descending score.
+    Query Pinecone using an OpenAI embedding for the given query.
+    Returns a structured object:
+        { "docs": [ { "source": str, "text": str, "score": float }, ... ] }
     """
     vec = _get_embedding(query)
-    out: List[Dict[str, Any]] = []
+    items: List[DocItem] = []
 
-    for key, topk in TOP_K.items():
+    # Query each source type defined in TOP_K
+    for source_type, top_k in TOP_K.items():
         res = index.query(
             vector=vec,
-            top_k=topk,
+            top_k=top_k,
             include_metadata=True,
             namespace=PINECONE_NAMESPACE or None,
-            filter={SOURCETYPE: {"$eq": key}},
+            filter={SOURCETYPE: {"$eq": source_type}},
         )
 
-        for m in (res.matches or []):
-            meta = m.metadata or {}
-            out.append({
-                "source": key,
-                "text": meta.get(TEXT, ""),
-                "score": float(m.score or 0.0),
-            })
+        for match in (res.matches or []):
+            meta = match.metadata or {}
+            items.append(DocItem(
+                source=source_type,
+                text=meta.get(TEXT, "") or "",
+                score=float(match.score or 0.0),
+            ))
 
-    out.sort(key=lambda d: -d["score"])
-    return out
+    # Sort results by descending score
+    items.sort(key=lambda d: -d.score)
+    return RetrieveDocsOutput(docs=items)

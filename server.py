@@ -1,14 +1,12 @@
 
 from __future__ import annotations
-from typing import List, Dict, Any
 import os
 
 # FastMCP implements both stdio and Streamable HTTP transports
 from mcp.server.fastmcp import FastMCP
 
 # Import tools; keep this file minimal so you can add more tools later
-from tools.rag_retrieve import retrieve_docs
-
+from tools.rag_retrieve import retrieve_docs, RetrieveDocsOutput
 
 # === Initialize MCP server ===
 mcp = FastMCP(
@@ -20,15 +18,11 @@ mcp = FastMCP(
 )
 
 
-# === Tool: retrieve_docs ===
-@mcp.tool()
-def retrieve_docs_tool(query: str) -> List[Dict[str, Any]]:
-    """
-    Fetch prioritized chunks from your RAG store—documentation, how-tos, tutorials and articles—
-    based on a single search query.
-    """
-    return retrieve_docs(query=query)
 
+@mcp.tool(structured_output=True)
+def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
+    """Return structured retrieval results as {docs: [...]}."""
+    return retrieve_docs(query)
 
 # Template for future tools:
 # @mcp.tool()
