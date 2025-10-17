@@ -21,7 +21,10 @@ mcp = FastMCP(
 
 @mcp.tool(structured_output=True)
 def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
-    """Return structured retrieval results as {docs: [...]}."""
+    """
+    Fetch prioritized chunks from your RAG store—documentation, how-tos, tutorials and articles—
+    based on a single search query.
+    """
     return retrieve_docs(query)
 
 # Template for future tools:

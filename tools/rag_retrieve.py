@@ -1,6 +1,6 @@
 from __future__ import annotations
 from typing import List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from openai import OpenAI
 from pinecone import Pinecone
@@ -18,15 +18,18 @@ from settings import (
 
 # ====== Pydantic models ======
 class DocItem(BaseModel):
-    """Single retrieved document item."""
-    source: str
-    text: str
-    score: float
+    """Single retrieved chunk from the RAG knowledge base."""
+    source: str = Field(..., description="Chunk origin (e.g. docs, howto, tutorial).")
+    text: str = Field(..., description="Retrieved text snippet.")
+    score: float = Field(..., description="Similarity score (higher = more relevant).")
 
 
 class RetrieveDocsOutput(BaseModel):
-    """Structured response containing a list of retrieved document items."""
-    docs: List[DocItem]
+    """List of retrieved chunks sorted by relevance."""
+    docs: List[DocItem] = Field(
+        default_factory=list,
+        description="Relevant chunks returned from the RAG store."
+    )
 
 
 # ====== Initialization ======
@@ -73,9 +76,8 @@ def _get_embedding(text: str) -> List[float]:
 
 def retrieve_docs(query: str) -> RetrieveDocsOutput:
     """
-    Query Pinecone using an OpenAI embedding for the given query.
-    Returns a structured object:
-        { "docs": [ { "source": str, "text": str, "score": float }, ... ] }
+    Fetch prioritized chunks from your RAG store—documentation, how-tos, tutorials and articles—
+    based on a single search query.
     """
     vec = _get_embedding(query)
     items: List[DocItem] = []
@@ -100,4 +102,11 @@ def retrieve_docs(query: str) -> RetrieveDocsOutput:
 
     # Sort results by descending score
     items.sort(key=lambda d: -d.score)
-    return RetrieveDocsOutput(docs=items)
+    output = RetrieveDocsOutput(docs=items)
+
+    print(f"[retrieve_docs] Query: {query!r}")
+    print(f"[retrieve_docs] Retrieved {len(items)} document(s):")
+    for i, d in enumerate(items, 1):
+        print(f"  {i}. [{d.source}] score={d.score:.4f} — {d.text[:100]!r}")
+
+    return output
