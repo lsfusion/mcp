@@ -104,9 +104,4 @@ def retrieve_docs(query: str) -> RetrieveDocsOutput:
     items.sort(key=lambda d: -d.score)
     output = RetrieveDocsOutput(docs=items)
 
-    print(f"[retrieve_docs] Query: {query!r}")
-    print(f"[retrieve_docs] Retrieved {len(items)} document(s):")
-    for i, d in enumerate(items, 1):
-        print(f"  {i}. [{d.source}] score={d.score:.4f} — {d.text[:100]!r}")
-
     return output
