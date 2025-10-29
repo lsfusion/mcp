@@ -13,7 +13,7 @@ mcp = FastMCP(
     name="lsfusion-mcp",
     host=os.getenv("MCP_HOST", "0.0.0.0"),
     port=int(os.getenv("MCP_PORT", "8000")),
-    streamable_http_path="",
+    streamable_http_path="/",
     sse_path="/sse",
 )
 
