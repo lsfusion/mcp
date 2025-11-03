@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from .LsfJSLogicsLexer import LsfJSLogicsLexer
 from .LsfJSLogicsParser import LsfJSLogicsParser
 
-START_RULE = "script"  # fixed entry rule
+START_RULE = "statements"  # fixed entry rule
 
 # ---------------------------
 # Data models (structured out)
@@ -112,7 +112,7 @@ class _CollectingErrorListener(ErrorListener):
 # Public API
 # ---------------------------
 
-def validate_dsl_tool(text: str) -> DSLValidationResult:
+def validate_dsl_statements_tool(text: str) -> DSLValidationResult:
     """
     Validate full DSL input using the fixed start rule 'script'.
     Returns DSLValidationResult with syntax diagnostics suitable for MCP structured outputs.

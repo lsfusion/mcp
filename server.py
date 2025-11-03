@@ -25,13 +25,13 @@ def retrieve_docs(query: str) -> RetrieveDocsOutput:
     """
     return retrieve_docs_tool(query)
 
-from tools.validate_dsl import validate_dsl_tool, DSLValidationResult
+from tools.validate_dsl import validate_dsl_statements_tool, DSLValidationResult
 @mcp.tool(structured_output=True)
-def validate_dsl(text: str) -> DSLValidationResult:
+def validate_dsl_statements(text: str) -> DSLValidationResult:
     """
-    Validate full lsFusion code
+    Validate the syntax of the list of lsFusion statements
     """
-    return validate_dsl_tool(text)
+    return validate_dsl_statements_tool(text)
 
 # Template for future tools:
 # @mcp.tool()
