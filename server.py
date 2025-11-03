@@ -5,9 +5,6 @@ import os
 # FastMCP implements both stdio and Streamable HTTP transports
 from mcp.server.fastmcp import FastMCP
 
-# Import tools; keep this file minimal so you can add more tools later
-from tools.rag_retrieve import retrieve_docs, RetrieveDocsOutput
-
 # === Initialize MCP server ===
 mcp = FastMCP(
     name="lsfusion-mcp",
@@ -18,14 +15,23 @@ mcp = FastMCP(
 )
 
 
-
+# Import tools; keep this file minimal so you can add more tools later
+from tools.rag_retrieve import retrieve_docs_tool, RetrieveDocsOutput
 @mcp.tool(structured_output=True)
-def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
+def retrieve_docs(query: str) -> RetrieveDocsOutput:
     """
     Fetch prioritized chunks from your RAG store—documentation, how-tos, tutorials and articles—
     based on a single search query.
     """
-    return retrieve_docs(query)
+    return retrieve_docs_tool(query)
+
+from tools.validate_dsl import validate_dsl_tool, DSLValidationResult
+@mcp.tool(structured_output=True)
+def validate_dsl(text: str) -> DSLValidationResult:
+    """
+    Validate full lsFusion code
+    """
+    return validate_dsl_tool(text)
 
 # Template for future tools:
 # @mcp.tool()

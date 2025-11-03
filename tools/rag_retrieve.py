@@ -74,7 +74,7 @@ def _get_embedding(text: str) -> List[float]:
     return [v / n for v in acc]
 
 
-def retrieve_docs(query: str) -> RetrieveDocsOutput:
+def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
     """
     Fetch prioritized chunks from your RAG store—documentation, how-tos, tutorials and articles—
     based on a single search query.
