@@ -20,7 +20,7 @@ from tools.rag_retrieve import retrieve_docs_tool, RetrieveDocsOutput
 @mcp.tool(structured_output=True)
 def retrieve_docs(query: str) -> RetrieveDocsOutput:
     """
-    Fetch prioritized chunks from your RAG store—documentation, how-tos, tutorials and articles—
+    Fetch prioritized chunks from lsFusion RAG store (documentation, how-tos, tutorials and articles) —
     based on a single search query.
     """
     return retrieve_docs_tool(query)
