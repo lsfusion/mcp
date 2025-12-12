@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List
+from typing import List, Iterable
 from pydantic import BaseModel, Field
 
 from openai import OpenAI
@@ -11,6 +11,12 @@ from settings import (
     PINECONE_INDEX,
     PINECONE_NAMESPACE,
     EMBEDDING_MODEL,
+    SOURCETYPE_DOC_PARADIGM,
+    SOURCETYPE_DOC_LANGUAGE,
+    SOURCETYPE_DOC_HOWTO,
+    SOURCETYPE_DOC_TUTORIAL,
+    SOURCETYPE_ARTICLES,
+    SOURCETYPE_TALKS,
     TEXT,
     SOURCETYPE,
     TOP_K,
@@ -74,16 +80,18 @@ def _get_embedding(text: str) -> List[float]:
     return [v / n for v in acc]
 
 
-def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
+def _query_index_for_source(query: str, source_types: Iterable[str]) -> List[DocItem]:
     """
-    Fetch prioritized chunks from your RAG store—documentation, how-tos, tutorials and articles—
-    based on a single search query.
+    Query Pinecone for the given set of source types and return the corresponding DocItem list.
     """
     vec = _get_embedding(query)
     items: List[DocItem] = []
 
-    # Query each source type defined in TOP_K
-    for source_type, top_k in TOP_K.items():
+    for source_type in source_types:
+        top_k = TOP_K.get(source_type, 0)
+        if top_k <= 0:
+            continue
+
         res = index.query(
             vector=vec,
             top_k=top_k,
@@ -102,6 +110,18 @@ def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
 
     # Sort results by descending score
     items.sort(key=lambda d: -d.score)
-    output = RetrieveDocsOutput(docs=items)
+    return items
 
-    return output
+
+def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
+    items = _query_index_for_source(query, [SOURCETYPE_DOC_PARADIGM, SOURCETYPE_DOC_LANGUAGE])
+    return RetrieveDocsOutput(docs=items)
+
+def retrieve_samples_tool(query: str) -> RetrieveDocsOutput:
+    items = _query_index_for_source(query, [SOURCETYPE_DOC_HOWTO])
+    return RetrieveDocsOutput(docs=items)
+
+def retrieve_learning_tool(query: str) -> RetrieveDocsOutput:
+    items = _query_index_for_source(query, [SOURCETYPE_DOC_TUTORIAL, SOURCETYPE_ARTICLES, SOURCETYPE_TALKS])
+    return RetrieveDocsOutput(docs=items)
+

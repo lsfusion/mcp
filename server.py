@@ -20,10 +20,29 @@ from tools.rag_retrieve import retrieve_docs_tool, RetrieveDocsOutput
 @mcp.tool(structured_output=True)
 def retrieve_docs(query: str) -> RetrieveDocsOutput:
     """
-    Fetch prioritized chunks from lsFusion RAG store (documentation, how-tos, tutorials and articles) —
+    Fetch prioritized chunks from lsFusion RAG store (documentation and language reference) —
     based on a single search query.
     """
     return retrieve_docs_tool(query)
+
+
+from tools.rag_retrieve import retrieve_samples_tool
+@mcp.tool(structured_output=True)
+def retrieve_samples(query: str) -> RetrieveDocsOutput:
+    """
+    Fetch prioritized chunks from lsFusion RAG store (how-tos and code samples) — based on a single search query.
+    """
+    return retrieve_samples_tool(query)
+
+
+from tools.rag_retrieve import retrieve_learning_tool
+@mcp.tool(structured_output=True)
+def retrieve_learning(query: str) -> RetrieveDocsOutput:
+    """
+    Fetch prioritized chunks from lsFusion RAG store (tutorials and articles) — based on a single search query.
+    """
+    return retrieve_learning_tool(query)
+
 
 from tools.validate_dsl import validate_dsl_statements_tool, DSLValidationResult
 @mcp.tool(structured_output=True)
@@ -41,8 +60,8 @@ def validate_dsl_statements(text: str) -> DSLValidationResult:
 
 
 if __name__ == "__main__":
-    # transport = os.getenv("MCP_TRANSPORT", "stdio")
-    # if transport == "stdio":
-    #     mcp.run("stdio")
-    # else:
-    mcp.run("streamable-http")
+    transport = os.getenv("MCP_TRANSPORT", "")
+    if transport == "stdio":
+        mcp.run()
+    else:
+        mcp.run("streamable-http")
