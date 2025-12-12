@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field
 from .LsfJSLogicsLexer import LsfJSLogicsLexer
 from .LsfJSLogicsParser import LsfJSLogicsParser
 
-START_RULE = "statements"  # fixed entry rule
+START_MODULE_RULE = "script"
+START_RULE = "statements"  
 
 # ---------------------------
 # Data models (structured out)
@@ -114,7 +115,9 @@ class _CollectingErrorListener(ErrorListener):
 
 def validate_dsl_statements_tool(text: str) -> DSLValidationResult:
     """
-    Validate full DSL input using the fixed start rule 'script'.
+    Validate full DSL input.
+    - If the text starts with 'MODULE', use the 'script' rule (module header + body).
+    - Otherwise, use the 'statements' rule (sequence of statements).
     Returns DSLValidationResult with syntax diagnostics suitable for MCP structured outputs.
     """
     input_stream = InputStream(text)
@@ -128,20 +131,43 @@ def validate_dsl_statements_tool(text: str) -> DSLValidationResult:
     parse_listener = _CollectingErrorListener(text, parser)
     lexer.addErrorListener(lex_listener); parser.addErrorListener(parse_listener)
 
-    # Parse from the fixed entry rule
+    # Select entry rule: module (`script`) vs plain statements
+    stripped = text.lstrip()
+    entry_rule = START_MODULE_RULE if stripped.upper().startswith("MODULE") else START_RULE
+
+    # Parse from the chosen entry rule
     try:
-        getattr(parser, START_RULE)()
+        getattr(parser, entry_rule)()
     except AttributeError:
         # If the generated parser doesn't have 'script', return an internal error
         return DSLValidationResult(
             ok=False,
             errors=[DSLError(
                 type="internal",
-                message=f"Start rule '{START_RULE}' not found in parser.",
+                message=f"Start rule '{entry_rule}' not found in parser.",
                 line=1, column=0,
-                hint="Update START_RULE or regenerate parser to match grammar."
+                hint="Update entry rule selection or regenerate parser to match grammar."
             )]
         )
 
     errors = lex_listener.errors + parse_listener.errors
+
+    # If parsing stopped before EOF or consumed nothing, flag trailing/unknown input explicitly.
+    next_tok = tokens.LT(1)
+    if next_tok.type != Token.EOF:
+        excerpt, pointer = _line_excerpt(text, next_tok.line, next_tok.column)
+        errors.append(
+            DSLError(
+                type="syntax",
+                message="Unexpected input not parsed by 'statements'.",
+                line=next_tok.line,
+                column=next_tok.column,
+                found=next_tok.text,
+                expected=["EOF"],
+                hint="Ensure only statements are passed or use a rule that matches the full module.",
+                excerpt=excerpt,
+                pointer=pointer,
+            )
+        )
+
     return DSLValidationResult(ok=(len(errors) == 0), errors=errors)
