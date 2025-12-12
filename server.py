@@ -52,6 +52,26 @@ def validate_dsl_statements(text: str) -> DSLValidationResult:
     """
     return validate_dsl_statements_tool(text)
 
+
+@mcp.tool()
+def get_brief() -> str:
+    """
+    Initialize context for this MCP server.
+
+    Call this tool first before using any other tools.
+    It loads the contents of brief.md so the calling model can read guidance
+    before generating or editing lsFusion code.
+    """
+    brief_path = os.path.join(os.path.dirname(__file__), "brief.md")
+    try:
+        with open(brief_path, "r", encoding="utf-8") as brief_file:
+            return brief_file.read()
+    except FileNotFoundError:
+        return "brief.md not found"
+    except OSError as exc:
+        return f"Unable to read brief.md: {exc}"
+
+
 # Template for future tools:
 # @mcp.tool()
 # def lint_code(language: str, code: str) -> dict:
