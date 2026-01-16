@@ -17,6 +17,7 @@ from settings import (
     SOURCETYPE_DOC_TUTORIAL,
     SOURCETYPE_ARTICLES,
     SOURCETYPE_TALKS,
+    SOURCETYPE_SAMPLES,
     TEXT,
     SOURCETYPE,
     TOP_K,
@@ -118,7 +119,7 @@ def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
     return RetrieveDocsOutput(docs=items)
 
 def retrieve_samples_tool(query: str) -> RetrieveDocsOutput:
-    items = _query_index_for_source(query, [SOURCETYPE_DOC_HOWTO])
+    items = _query_index_for_source(query, [SOURCETYPE_SAMPLES, SOURCETYPE_DOC_HOWTO])
     return RetrieveDocsOutput(docs=items)
 
 def retrieve_learning_tool(query: str) -> RetrieveDocsOutput:
