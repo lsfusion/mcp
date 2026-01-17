@@ -1,12 +1,18 @@
 
 # lsfusion-mcp
 
-An extensible MCP server hosting multiple tools. Ships with `retrieve_docs(query: string)` for RAG search
-(OpenAI embeddings -> Pinecone), and a structure ready for future tools (e.g., code syntax checks).
+An extensible MCP server hosting multiple tools for lsFusion development. Ships with RAG search tools, syntax validation, and mandatory guidance.
 
 Transports:
 - **STDIO** for local development / desktop MCP clients.
 - **Streamable HTTP** for production via Uvicorn (mounted at `/mcp`).
+
+## Core Tools
+- `lsfusion_get_guidance()`: Fetch mandatory brief and rules.
+- `lsfusion_retrieve_docs(query: string)`: Official documentation search.
+- `lsfusion_retrieve_howtos(query: string)`: How-tos and combined scenarios.
+- `lsfusion_retrieve_community(query: string)`: Tutorials and community discussions.
+- `lsfusion_validate_syntax(text: string)`: Syntax validation for lsFusion statements.
 
 ## Quickstart (local)
 
@@ -33,15 +39,17 @@ mcp dev server.py
 Create a new module under `tools/` and register it with `@mcp.tool()` in `server.py` (or build an auto-discovery
 if you prefer). Keep tool signatures simple and JSON-serializable.
 
-## Contract / output for `retrieve_docs`
+## Contract / output for `lsfusion_retrieve_*`
 Returns an array of objects:
 ```json
-[
-  { "source": "documentation-how-to", "text": "....", "score": 0.73 },
-  { "source": "articles", "text": "....", "score": 0.69 }
-]
+{
+  "docs": [
+    { "source": "documentation-how-to", "text": "....", "score": 0.73 },
+    { "source": "articles", "text": "....", "score": 0.69 }
+  ]
+}
 ```
-Sorted by `score` descending.
+Sorted by `score` descending. Structured output is enabled.
 
 ## Environment variables
 - `OPENAI_API_KEY` — OpenAI API key

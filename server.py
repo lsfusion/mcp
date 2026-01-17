@@ -18,9 +18,9 @@ mcp = FastMCP(
 # Import tools; keep this file minimal so you can add more tools later
 from tools.rag_retrieve import retrieve_docs_tool, RetrieveDocsOutput
 @mcp.tool(structured_output=True)
-def retrieve_docs(query: str) -> RetrieveDocsOutput:
+def lsfusion_retrieve_docs(query: str) -> RetrieveDocsOutput:
     """
-    Fetch prioritized chunks from lsFusion RAG store (documentation and language reference) —
+    Fetch prioritized chunks from lsFusion RAG store (official documentation and language reference) —
     based on a single search query.
     """
     return retrieve_docs_tool(query)
@@ -28,25 +28,27 @@ def retrieve_docs(query: str) -> RetrieveDocsOutput:
 
 from tools.rag_retrieve import retrieve_samples_tool
 @mcp.tool(structured_output=True)
-def retrieve_samples(query: str) -> RetrieveDocsOutput:
+def lsfusion_retrieve_howtos_and_samples(query: str) -> RetrieveDocsOutput:
     """
-    Fetch prioritized chunks from lsFusion RAG store (how-tos and code samples) — based on a single search query.
+    Fetch prioritized chunks from lsFusion RAG store (code samples for combined tasks / scenarios and how-to) —
+    based on a single search query.
     """
     return retrieve_samples_tool(query)
 
 
 from tools.rag_retrieve import retrieve_learning_tool
 @mcp.tool(structured_output=True)
-def retrieve_learning(query: str) -> RetrieveDocsOutput:
+def lsfusion_retrieve_community(query: str) -> RetrieveDocsOutput:
     """
-    Fetch prioritized chunks from lsFusion RAG store (tutorials and articles) — based on a single search query.
+    Fetch prioritized chunks from lsFusion RAG store (tutorials, articles, and community discussions) — based on a single search query.
+    Use this ONLY for deep, ambiguous tasks when other retrieval tools (docs, howtos) did not provide a solution.
     """
     return retrieve_learning_tool(query)
 
 
 from tools.validate_dsl import validate_dsl_statements_tool, DSLValidationResult
 @mcp.tool(structured_output=True)
-def validate_dsl_statements(text: str) -> DSLValidationResult:
+def lsfusion_validate_syntax(text: str) -> DSLValidationResult:
     """
     Validate the syntax of the list of lsFusion statements
     """
@@ -54,22 +56,24 @@ def validate_dsl_statements(text: str) -> DSLValidationResult:
 
 
 @mcp.tool()
-def get_brief() -> str:
+def lsfusion_get_guidance() -> str:
     """
-    Initialize context for this MCP server.
+    Fetch the brief overview and mandatory rules for working with lsFusion.
+    IMPORTANT: The assistant MUST call this tool before ANY task related to lsFusion if it's not already in your context.
+    The assistant MUST read and strictly follow all rules and guidelines provided by this tool for ANY lsFusion-related task.
+    """
+    base_dir = os.path.dirname(__file__)
+    output = []
 
-    Call this tool first before using any other tools.
-    It loads the contents of brief.md so the calling model can read guidance
-    before generating or editing lsFusion code.
-    """
-    brief_path = os.path.join(os.path.dirname(__file__), "brief.md")
-    try:
-        with open(brief_path, "r", encoding="utf-8") as brief_file:
-            return brief_file.read()
-    except FileNotFoundError:
-        return "brief.md not found"
-    except OSError as exc:
-        return f"Unable to read brief.md: {exc}"
+    for filename in ["brief.md", "rules.md"]:
+        path = os.path.join(base_dir, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                output.append(f"--- {filename} ---\n{f.read()}")
+        except Exception as e:
+            output.append(f"--- {filename} ---\nError reading file: {e}")
+
+    return "\n\n".join(output)
 
 
 # Template for future tools:

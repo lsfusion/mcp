@@ -1,6 +1,6 @@
 ## Brief on lsFusion elements for AI agents
 
-Format: **very concise**, for understanding and code generation. Detailed syntax is retrieved via RAG in docs.
+Format: **very concise**, for understanding and code generation. Detailed description and syntax is retrieved with tools via RAG in docs.
 
 ---
 
