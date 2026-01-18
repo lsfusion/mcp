@@ -28,9 +28,9 @@ def lsfusion_retrieve_docs(query: str) -> RetrieveDocsOutput:
 
 from tools.rag_retrieve import retrieve_samples_tool
 @mcp.tool(structured_output=True)
-def lsfusion_retrieve_howtos_and_samples(query: str) -> RetrieveDocsOutput:
+def lsfusion_retrieve_howtos(query: str) -> RetrieveDocsOutput:
     """
-    Fetch prioritized chunks from lsFusion RAG store (code samples for combined tasks / scenarios and how-to) —
+    Fetch prioritized chunks from lsFusion RAG store (examples for combined tasks / scenarios and how-to) —
     based on a single search query.
     """
     return retrieve_samples_tool(query)

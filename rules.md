@@ -44,14 +44,13 @@ RULES FOR USING LSFUSION TOOLS
 
 A. HOW-TO AND EXAMPLES
 
-1. HOW-TO REQUESTS
-   For HOW-TO requests, the assistant MUST decompose the task
-   into sub-tasks, where each sub-task is a primitive HOW-TO task.
+1. The assistant MUST always request how-tos or examples via the corresponding
+   tools for ANY task related to code (including writing, modifying,
+   analyzing, or understanding code).
 
-2. EXAMPLES / SAMPLES
-   For SAMPLES or EXAMPLES requests, the assistant MUST decompose
-   the task into sub-tasks, where each sub-task produces
-   a small number of code lines.
+2. The assistant MUST decompose the task into sub-tasks, each producing a small
+   number of code lines, and try to format them in how-to style. This applies
+   to both primitive building blocks (HOW-TO) and complex applied scenarios (EXAMPLES).
 
 ----------------------------------------------------------------
 
@@ -86,11 +85,14 @@ C. ELEMENT SEARCH
     - correctly fill the corresponding filters
     - try to find required elements in a SINGLE search call
 
-3. If required elements cannot be found:
-    - the assistant MUST analyze which of the already found elements
-      may be related to the missing ones
-    - then search for the required elements among related elements
-      using appropriate additional filters
+3. If required elements cannot be found (e.g. by name):
+   - the assistant MUST do at least ONE of the following:
+     a) the assistant MUST search without filters or with minimal filters
+     (e.g. only scope/module/widely used words)
+     to get a "brief" of the project and discover relevant elements
+     b) the assistant MUST analyze which of the already found elements may be related
+     to the missing ones, then search for the required elements among related elements
+     using appropriate additional filters
 
 4. The assistant MUST prefer keyword-based search
    over regex-based search.
