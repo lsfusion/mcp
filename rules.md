@@ -68,6 +68,10 @@ B. DOCUMENTATION LOOKUP
    it MUST consult the documentation
    via the documentation lookup tools.
 
+4. The assistant MUST use community retrieval ONLY for deep,
+   ambiguous tasks when other retrieval tools (docs, how-tos)
+   did not provide a solution.
+
 ----------------------------------------------------------------
 
 C. ELEMENT SEARCH

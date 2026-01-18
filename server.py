@@ -50,7 +50,8 @@ from tools.validate_dsl import validate_dsl_statements_tool, DSLValidationResult
 @mcp.tool(structured_output=True)
 def lsfusion_validate_syntax(text: str) -> DSLValidationResult:
     """
-    Validate the syntax of the list of lsFusion statements
+    Validate the syntax of the list of lsFusion statements.
+    Use this ONLY when IDE tools for error checking and code execution are not available.
     """
     return validate_dsl_statements_tool(text)
 
