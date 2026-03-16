@@ -453,3 +453,115 @@ CHANGE SESSION RULES (`NEWSESSION`, `NESTEDSESSION`, `APPLY`)
    merely to hide session-visibility bugs.
    If upper-session changes must remain visible,
    nested session semantics are required.
+
+----------------------------------------------------------------
+
+IMPORT RULES (`IMPORT`)
+
+1. Before working with `IMPORT`, the assistant MUST identify
+   elements in this order:
+   - module and namespace that own the import flow
+   - target classes that will be created or updated
+   - staging properties used during import
+   - import actions
+   - import forms, if the payload is hierarchical
+
+2. The assistant MUST choose the import style intentionally:
+   - flat files (`CSV`, `XLS`, `DBF`, `TABLE`)
+     -> prefer `IMPORT ... TO` or `FIELDS`
+   - nested `JSON` / `XML`, parent-child structures,
+     namespaces, or `EXTID` mapping
+     -> prefer form import
+   - row-at-a-time integration responses
+     -> prefer `FIELDS ... DO`
+
+3. For flat imports that need validation, deduplication,
+   multi-pass processing, or post-processing,
+   the assistant SHOULD stage data into `LOCAL` properties
+   first, usually by `INTEGER` row,
+   then process it in a separate
+   `FOR imported(INTEGER i)` pass.
+
+4. The assistant SHOULD use `FIELDS ... DO`
+   when imported values are consumed only once
+   and introducing reusable local properties
+   would add noise.
+
+5. The assistant SHOULD specify column mappings explicitly
+   when the external template is fixed or sparse.
+
+   Sequential mapping without explicit column IDs
+   is acceptable only when column order itself
+   is the agreed interface.
+
+6. For form import, the assistant MUST declare
+   a dedicated import form before use.
+
+   The form MUST use one object per object group
+   with numeric or concrete user classes.
+
+   The form SHOULD mirror the external structure with:
+   - `FILTERS` for parent-child links
+   - `EXTID`, `FORMEXTID`, groups, and `ATTR`
+     only where the external schema requires them
+
+   The assistant MUST remember that importing into a form
+   cancels pending changes to imported form properties
+   in the current session.
+
+7. The assistant MUST choose format options explicitly
+   when the external contract depends on them:
+   - `HEADER` / `NOHEADER`
+   - `SHEET`
+   - `CHARSET`
+   - `ATTR`
+   - `NULL`
+
+   The assistant SHOULD prefer `HEADER`
+   for stable `CSV` / `XLS` templates,
+   because `NOHEADER` can silently map missing
+   or mistyped columns to `NULL`.
+
+8. The assistant MUST validate referenced business keys
+   before creating or updating persistent objects.
+
+   Typical keys in this project are `id`, `number`,
+   partner or item codes, and external references.
+
+   Missing master data or malformed payloads
+   MUST stop the import or surface a clear error.
+
+9. The assistant SHOULD separate raw import
+   from domain resolution:
+   - first parse the file or payload
+     into locals or an import form
+   - then resolve references such as
+     item, partner, status, type, or other lookups
+   - only then create or update domain objects
+
+10. For user-started batch imports and external integrations,
+    the assistant SHOULD isolate persistence in `NEWSESSION`.
+
+    After domain writes, the assistant SHOULD `APPLY;`.
+    If later logic depends on success,
+    the assistant MUST check `canceled()`
+    and surface `applyMessage()` or `throwException(...)`.
+
+    If the import must see upper-session local buffers,
+    the assistant MUST use nested session semantics
+    instead of plain `NEWSESSION`.
+
+11. The assistant MUST NOT partially persist
+    a failed import silently.
+
+    It SHOULD use `MESSAGE`, `RETURN`,
+    `throwException`, or an explicit failure flag,
+    consistent with the caller:
+    - interactive import -> `MESSAGE`
+    - API or background integration
+      -> exception or explicit failure state
+
+12. When importing booleans,
+    the assistant MUST remember workspace boolean rules:
+    - `BOOLEAN` uses `TRUE` and `NULL`
+    - `FALSE` is valid only for `TBOOLEAN`
