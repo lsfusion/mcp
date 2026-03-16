@@ -514,8 +514,6 @@ IMPORT RULES (`IMPORT`)
    - `HEADER` / `NOHEADER`
    - `SHEET`
    - `CHARSET`
-   - `ATTR`
-   - `NULL`
 
    The assistant SHOULD prefer `HEADER`
    for stable `CSV` / `XLS` templates,
@@ -528,6 +526,15 @@ IMPORT RULES (`IMPORT`)
    Typical keys in this project are `id`, `number`,
    partner or item codes, and external references.
 
+   Each reference MUST be checked
+   in a separate `FOR`
+   using `GROUP SUM 1 BY`
+   over the imported key values.
+
+   If possible, the assistant SHOULD NOT write
+   resolved references to a separate `LOCAL`
+   before the main import logic.
+
    Missing master data or malformed payloads
    MUST stop the import or surface a clear error.
 
@@ -535,7 +542,7 @@ IMPORT RULES (`IMPORT`)
    from domain resolution:
    - first parse the file or payload
      into locals or an import form
-   - then resolve references such as
+   - then check references such as
      item, partner, status, type, or other lookups
    - only then create or update domain objects
 
@@ -565,3 +572,38 @@ IMPORT RULES (`IMPORT`)
     the assistant MUST remember workspace boolean rules:
     - `BOOLEAN` uses `TRUE` and `NULL`
     - `FALSE` is valid only for `TBOOLEAN`
+
+13. For create-or-update synchronization imports,
+    the assistant MUST separate object creation
+    from property updates.
+
+    The assistant MUST use one separate `FOR`
+    to create missing objects only.
+
+    If imported key values may be non-unique,
+    the creation pass SHOULD iterate by grouped keys
+    using `GROUP SUM ... BY`
+    rather than by raw imported rows.
+
+    The assistant MUST then use a second separate `FOR`
+    to update properties of matched objects.
+
+    The assistant MUST NOT mix object creation
+    and property updates in the same loop
+    for synchronization imports.
+
+    If full synchronization is required,
+    the assistant SHOULD add an explicit delete step.
+
+14. If `LOCAL` staging properties
+    are used only in one import action,
+    the assistant MUST declare them
+    inside that action.
+
+    The assistant SHOULD NOT lift such `LOCAL` properties
+    to module scope without need.
+
+    Exception:
+    a `LOCAL` property may be declared outside the action
+    only when it must be used by an import form
+    or reused by several related actions.
