@@ -248,6 +248,10 @@ PROPERTY RULES
 9. The assistant SHOULD specify `CHARWIDTH`
    in the property definition rather than in form design.
 
+   For a simple property composition that only forwards
+   another property, the assistant SHOULD NOT repeat
+   `CHARWIDTH` on the derived property unless it must differ.
+
 10. For static objects, the assistant MUST NOT use
     `staticCaption` or `staticName` properties.
 
@@ -262,6 +266,52 @@ PROPERTY RULES
 
 13. The assistant SHOULD NOT specify an explicit namespace
     for a property unless necessary.
+
+----------------------------------------------------------------
+
+PROPERTY NAMING POLICY
+
+1. Property names MUST follow lowerCamelCase,
+   as in the official lsFusion coding conventions:
+   the first word starts with a lowercase letter,
+   and each following word starts with a capital letter.
+
+2. For an object's own primitive attributes,
+   the assistant MUST prefer the shortest stable business name
+   already used in the project.
+
+   Typical base names in the source are:
+   `id`, `name`, `fullName`, `number`, `date`, `dateTime`,
+   `status`, `type`, `note`, `details`, `price`, `quantity`,
+   `amount`, `email`, `phone`, `address`, `city`, `state`,
+   `zip`, `index`, `count`, `color`, `readonly`, `archived`.
+
+3. The assistant MUST reuse an existing base property name
+   for the same concept across different classes and signatures
+   instead of inventing synonyms.
+
+4. The assistant SHOULD NOT include the owner class name
+   in a property's own base attribute
+   when a generic name is sufficient.
+
+   Prefer:
+   `name(Partner)`, `email(Partner)`, `number(Order)`.
+
+   Avoid:
+   `partnerName`, `partnerEmail`, `orderNumber`.
+
+5. The assistant MUST NOT add verbs such as
+   `get`, `set`, `calc`, or `compute`,
+   or filler words such as `value`, `data`, `info`,
+   to a property name unless they are part
+   of the actual business meaning.
+
+6. Human-readable wording belongs in the caption,
+   not in the identifier.
+
+   The assistant SHOULD keep the property name technical
+   and reusable even when the caption is long,
+   localized, or contains business phrasing.
 
 ----------------------------------------------------------------
 
