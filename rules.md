@@ -75,6 +75,23 @@ MANDATORY WORKFLOW
 
 RULES FOR USING LSFUSION TOOLS
 
+GENERAL QUERY SCOPE
+
+1. When querying lsFusion tools, the assistant MUST ask
+   only abstract or technical questions,
+   such as syntax, semantics, platform behavior,
+   patterns, examples, constraints, or element lookup.
+
+2. The assistant MUST NOT ask lsFusion tools
+   about concrete business logic,
+   business rules, domain meanings,
+   or project-specific business decisions.
+
+3. Concrete business logic for the current project
+   MUST be derived from the repository,
+   the user, and explicit project context,
+   not from lsFusion tool queries.
+
 A. HOW-TO AND EXAMPLES
 
 1. For any code-related lsFusion task, the assistant MUST
