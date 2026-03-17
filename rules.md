@@ -226,45 +226,54 @@ PROPERTY RULES
    for property expressions:
    if any parameter is `NULL`, the result is `NULL`.
 
-4. The assistant SHOULD avoid unnecessary conditions
+4. The assistant MUST NOT use `GROUP AGGR`
+   inside arbitrary expressions.
+
+   `GROUP AGGR` is allowed only in property definitions.
+
+   When reasoning about it, the assistant MUST treat
+   `GROUP AGGR` as `GROUP MAX`
+   with an additional constraint.
+
+5. The assistant SHOULD avoid unnecessary conditions
    when the language semantics already produce the required result.
 
-5. The assistant MUST NOT create a property whose expression
+6. The assistant MUST NOT create a property whose expression
    is equal to one of its parameters.
 
-6. The assistant MUST NOT create multiple properties
+7. The assistant MUST NOT create multiple properties
    with identical expressions.
 
-7. If a property is calculated from another property
+8. If a property is calculated from another property
    but has different parameters, the assistant SHOULD try
    to keep the same property name.
 
-8. To check whether a property is `NULL`,
+9. To check whether a property is `NULL`,
    the assistant SHOULD use `IF NOT property(...)`.
 
    To check that it is not `NULL`,
    the assistant SHOULD use `IF property(...)`.
 
-9. The assistant SHOULD specify `CHARWIDTH`
+10. The assistant SHOULD specify `CHARWIDTH`
    in the property definition rather than in form design.
 
    For a simple property composition that only forwards
    another property, the assistant SHOULD NOT repeat
    `CHARWIDTH` on the derived property unless it must differ.
 
-10. For static objects, the assistant MUST NOT use
+11. For static objects, the assistant MUST NOT use
     `staticCaption` or `staticName` properties.
 
     The assistant MUST use `caption` and `name` instead.
 
-11. Property names SHOULD be concise
+12. Property names SHOULD be concise
     and avoid unnecessary words.
 
-12. The assistant SHOULD NOT use words in a property name
+13. The assistant SHOULD NOT use words in a property name
     that duplicate parameter class names
     unless required for clarity.
 
-13. The assistant SHOULD NOT specify an explicit namespace
+14. The assistant SHOULD NOT specify an explicit namespace
     for a property unless necessary.
 
 ----------------------------------------------------------------
