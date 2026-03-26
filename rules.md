@@ -341,6 +341,46 @@ PROPERTY NAMING POLICY
 
 ----------------------------------------------------------------
 
+INTERNATIONALIZATION AND REVERSE TRANSLATION RULES
+
+1. The assistant MUST use `*ResourceBundle.properties` files
+   for UI localization.
+
+   The value inside `{...}` MUST be treated
+   as the lookup key that lsFusion resolves
+   according to the current locale.
+
+2. The assistant MUST first determine
+   whether reverse translation is used
+   in the current project area.
+
+   If it is used,
+   the assistant MUST continue using it
+   in that area
+   and MUST follow the existing project policy.
+
+   The assistant MUST keep id selection
+   consistent with the established pattern
+   already used there.
+
+   The assistant MUST NOT introduce
+   a new explicit id policy
+   unless the user requests it.
+
+3. Reverse translation means
+   translating in the opposite direction
+   of normal UI localization:
+   not `key -> localized text`,
+   but `localized text -> key`,
+   and then, if needed, to another locale.
+
+   If ids are not specified explicitly in code,
+   this canonical value is the source-language text itself,
+   or its normalized stable form,
+   so it effectively plays the role of the key.
+
+----------------------------------------------------------------
+
 FORM RULES
 
 1. To place several objects in one table at once,
