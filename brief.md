@@ -124,8 +124,8 @@ Format: **very concise**, for understanding and code generation. Detailed descri
 - **Syntax (search)**: standard flow keywords.
 
 ### Form actions
-- **Description**: `SHOW`, `DIALOG`, `SEEK`, `EXPAND`, `COLLAPSE`.
-- **Syntax (search)**: `SHOW FormName [OBJECTS ...];`, `DIALOG FormName OBJECTS ... INPUT [FILTERS ...] DO { ... }`, `SEEK [FIRST|LAST] group = obj;`
+- **Description**: `SHOW`, `DIALOG`, `ACTIVATE` (form / tab / property activation and object search), `EXPAND`, `COLLAPSE`.
+- **Syntax (search)**: `SHOW FormName [OBJECTS ...];`, `DIALOG FormName OBJECTS ... INPUT [FILTERS ...] DO { ... }`, `ACTIVATE FORM/TAB/PROPERTY name;`, `ACTIVATE [FIRST|LAST|NULL] group = obj;`
 
 ---
 
