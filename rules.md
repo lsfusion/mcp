@@ -561,6 +561,12 @@ CHANGE SESSION RULES (`NEWSESSION`, `NESTEDSESSION`, `APPLY`)
    If the failure must be surfaced to the user or integration,
    the assistant SHOULD use `applyMessage()`.
 
+   If `APPLY` fails because of a constraint, the changes
+   remain unsaved in the current session, and any following
+   `APPLY` in the same session will also fail until the
+   offending data is fixed or the changes are discarded
+   (for example with `CANCEL`).
+
 9. The assistant SHOULD keep `NEWSESSION` blocks small
    and purpose-specific: isolate one unit of work,
    apply it if needed, and exit.
