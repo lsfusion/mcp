@@ -152,6 +152,15 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LsfJSLogicsParser#localAsyncDeclaration.
+    def enterLocalAsyncDeclaration(self, ctx:LsfJSLogicsParser.LocalAsyncDeclarationContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#localAsyncDeclaration.
+    def exitLocalAsyncDeclaration(self, ctx:LsfJSLogicsParser.LocalAsyncDeclarationContext):
+        pass
+
+
     # Enter a parse tree produced by LsfJSLogicsParser#formExtIDDeclaration.
     def enterFormExtIDDeclaration(self, ctx:LsfJSLogicsParser.FormExtIDDeclarationContext):
         pass
@@ -179,6 +188,69 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LsfJSLogicsParser#formFormsList.
+    def enterFormFormsList(self, ctx:LsfJSLogicsParser.FormFormsListContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formFormsList.
+    def exitFormFormsList(self, ctx:LsfJSLogicsParser.FormFormsListContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formFormsListItem.
+    def enterFormFormsListItem(self, ctx:LsfJSLogicsParser.FormFormsListItemContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formFormsListItem.
+    def exitFormFormsListItem(self, ctx:LsfJSLogicsParser.FormFormsListItemContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formMappingObjects.
+    def enterFormMappingObjects(self, ctx:LsfJSLogicsParser.FormMappingObjectsContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formMappingObjects.
+    def exitFormMappingObjects(self, ctx:LsfJSLogicsParser.FormMappingObjectsContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formMappingProperties.
+    def enterFormMappingProperties(self, ctx:LsfJSLogicsParser.FormMappingPropertiesContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formMappingProperties.
+    def exitFormMappingProperties(self, ctx:LsfJSLogicsParser.FormMappingPropertiesContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formMappingFilterGroups.
+    def enterFormMappingFilterGroups(self, ctx:LsfJSLogicsParser.FormMappingFilterGroupsContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formMappingFilterGroups.
+    def exitFormMappingFilterGroups(self, ctx:LsfJSLogicsParser.FormMappingFilterGroupsContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formMappingComponents.
+    def enterFormMappingComponents(self, ctx:LsfJSLogicsParser.FormMappingComponentsContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formMappingComponents.
+    def exitFormMappingComponents(self, ctx:LsfJSLogicsParser.FormMappingComponentsContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formMapping.
+    def enterFormMapping(self, ctx:LsfJSLogicsParser.FormMappingContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formMapping.
+    def exitFormMapping(self, ctx:LsfJSLogicsParser.FormMappingContext):
+        pass
+
+
     # Enter a parse tree produced by LsfJSLogicsParser#formGroupObjectsList.
     def enterFormGroupObjectsList(self, ctx:LsfJSLogicsParser.FormGroupObjectsListContext):
         pass
@@ -188,12 +260,39 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LsfJSLogicsParser#formExtendGroupObjectsList.
+    def enterFormExtendGroupObjectsList(self, ctx:LsfJSLogicsParser.FormExtendGroupObjectsListContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formExtendGroupObjectsList.
+    def exitFormExtendGroupObjectsList(self, ctx:LsfJSLogicsParser.FormExtendGroupObjectsListContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formExtendGroupObjectDeclaration.
+    def enterFormExtendGroupObjectDeclaration(self, ctx:LsfJSLogicsParser.FormExtendGroupObjectDeclarationContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formExtendGroupObjectDeclaration.
+    def exitFormExtendGroupObjectDeclaration(self, ctx:LsfJSLogicsParser.FormExtendGroupObjectDeclarationContext):
+        pass
+
+
     # Enter a parse tree produced by LsfJSLogicsParser#formTreeGroupObjectList.
     def enterFormTreeGroupObjectList(self, ctx:LsfJSLogicsParser.FormTreeGroupObjectListContext):
         pass
 
     # Exit a parse tree produced by LsfJSLogicsParser#formTreeGroupObjectList.
     def exitFormTreeGroupObjectList(self, ctx:LsfJSLogicsParser.FormTreeGroupObjectListContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formExtendTreeGroupObjectList.
+    def enterFormExtendTreeGroupObjectList(self, ctx:LsfJSLogicsParser.FormExtendTreeGroupObjectListContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formExtendTreeGroupObjectList.
+    def exitFormExtendTreeGroupObjectList(self, ctx:LsfJSLogicsParser.FormExtendTreeGroupObjectListContext):
         pass
 
 
@@ -230,15 +329,6 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#formGroupObject.
     def exitFormGroupObject(self, ctx:LsfJSLogicsParser.FormGroupObjectContext):
-        pass
-
-
-    # Enter a parse tree produced by LsfJSLogicsParser#formTreeGroupObject.
-    def enterFormTreeGroupObject(self, ctx:LsfJSLogicsParser.FormTreeGroupObjectContext):
-        pass
-
-    # Exit a parse tree produced by LsfJSLogicsParser#formTreeGroupObject.
-    def exitFormTreeGroupObject(self, ctx:LsfJSLogicsParser.FormTreeGroupObjectContext):
         pass
 
 
@@ -467,6 +557,15 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LsfJSLogicsParser#formObjectOptions.
+    def enterFormObjectOptions(self, ctx:LsfJSLogicsParser.FormObjectOptionsContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formObjectOptions.
+    def exitFormObjectOptions(self, ctx:LsfJSLogicsParser.FormObjectOptionsContext):
+        pass
+
+
     # Enter a parse tree produced by LsfJSLogicsParser#formObjectDeclaration.
     def enterFormObjectDeclaration(self, ctx:LsfJSLogicsParser.FormObjectDeclarationContext):
         pass
@@ -482,6 +581,24 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#formPropertiesList.
     def exitFormPropertiesList(self, ctx:LsfJSLogicsParser.FormPropertiesListContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formExtendPropertiesList.
+    def enterFormExtendPropertiesList(self, ctx:LsfJSLogicsParser.FormExtendPropertiesListContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formExtendPropertiesList.
+    def exitFormExtendPropertiesList(self, ctx:LsfJSLogicsParser.FormExtendPropertiesListContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formExtendMappedPropertyListItem.
+    def enterFormExtendMappedPropertyListItem(self, ctx:LsfJSLogicsParser.FormExtendMappedPropertyListItemContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formExtendMappedPropertyListItem.
+    def exitFormExtendMappedPropertyListItem(self, ctx:LsfJSLogicsParser.FormExtendMappedPropertyListItemContext):
         pass
 
 
@@ -503,12 +620,30 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LsfJSLogicsParser#formPropertyDrawSelector.
+    def enterFormPropertyDrawSelector(self, ctx:LsfJSLogicsParser.FormPropertyDrawSelectorContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formPropertyDrawSelector.
+    def exitFormPropertyDrawSelector(self, ctx:LsfJSLogicsParser.FormPropertyDrawSelectorContext):
+        pass
+
+
     # Enter a parse tree produced by LsfJSLogicsParser#formMappedPropertiesList.
     def enterFormMappedPropertiesList(self, ctx:LsfJSLogicsParser.FormMappedPropertiesListContext):
         pass
 
     # Exit a parse tree produced by LsfJSLogicsParser#formMappedPropertiesList.
     def exitFormMappedPropertiesList(self, ctx:LsfJSLogicsParser.FormMappedPropertiesListContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formMappedPropertyListItem.
+    def enterFormMappedPropertyListItem(self, ctx:LsfJSLogicsParser.FormMappedPropertyListItemContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formMappedPropertyListItem.
+    def exitFormMappedPropertyListItem(self, ctx:LsfJSLogicsParser.FormMappedPropertyListItemContext):
         pass
 
 
@@ -593,15 +728,6 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by LsfJSLogicsParser#formPropertySelector.
-    def enterFormPropertySelector(self, ctx:LsfJSLogicsParser.FormPropertySelectorContext):
-        pass
-
-    # Exit a parse tree produced by LsfJSLogicsParser#formPropertySelector.
-    def exitFormPropertySelector(self, ctx:LsfJSLogicsParser.FormPropertySelectorContext):
-        pass
-
-
     # Enter a parse tree produced by LsfJSLogicsParser#mappedPropertyDraw.
     def enterMappedPropertyDraw(self, ctx:LsfJSLogicsParser.MappedPropertyDrawContext):
         pass
@@ -617,6 +743,15 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#formPropertyUList.
     def exitFormPropertyUList(self, ctx:LsfJSLogicsParser.FormPropertyUListContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formPropertyUListItem.
+    def enterFormPropertyUListItem(self, ctx:LsfJSLogicsParser.FormPropertyUListItemContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formPropertyUListItem.
+    def exitFormPropertyUListItem(self, ctx:LsfJSLogicsParser.FormPropertyUListItemContext):
         pass
 
 
@@ -737,15 +872,6 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by LsfJSLogicsParser#extendFilterGroupDeclaration.
-    def enterExtendFilterGroupDeclaration(self, ctx:LsfJSLogicsParser.ExtendFilterGroupDeclarationContext):
-        pass
-
-    # Exit a parse tree produced by LsfJSLogicsParser#extendFilterGroupDeclaration.
-    def exitExtendFilterGroupDeclaration(self, ctx:LsfJSLogicsParser.ExtendFilterGroupDeclarationContext):
-        pass
-
-
     # Enter a parse tree produced by LsfJSLogicsParser#formRegularFilterDeclaration.
     def enterFormRegularFilterDeclaration(self, ctx:LsfJSLogicsParser.FormRegularFilterDeclarationContext):
         pass
@@ -818,12 +944,21 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by LsfJSLogicsParser#formPropertyDrawWithOrder.
-    def enterFormPropertyDrawWithOrder(self, ctx:LsfJSLogicsParser.FormPropertyDrawWithOrderContext):
+    # Enter a parse tree produced by LsfJSLogicsParser#propertyDrawOrPropertyExprWithOrder.
+    def enterPropertyDrawOrPropertyExprWithOrder(self, ctx:LsfJSLogicsParser.PropertyDrawOrPropertyExprWithOrderContext):
         pass
 
-    # Exit a parse tree produced by LsfJSLogicsParser#formPropertyDrawWithOrder.
-    def exitFormPropertyDrawWithOrder(self, ctx:LsfJSLogicsParser.FormPropertyDrawWithOrderContext):
+    # Exit a parse tree produced by LsfJSLogicsParser#propertyDrawOrPropertyExprWithOrder.
+    def exitPropertyDrawOrPropertyExprWithOrder(self, ctx:LsfJSLogicsParser.PropertyDrawOrPropertyExprWithOrderContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#propertyDrawOrPropertyExpr.
+    def enterPropertyDrawOrPropertyExpr(self, ctx:LsfJSLogicsParser.PropertyDrawOrPropertyExprContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#propertyDrawOrPropertyExpr.
+    def exitPropertyDrawOrPropertyExpr(self, ctx:LsfJSLogicsParser.PropertyDrawOrPropertyExprContext):
         pass
 
 
@@ -833,6 +968,24 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#orderLiteral.
     def exitOrderLiteral(self, ctx:LsfJSLogicsParser.OrderLiteralContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formPropertyOptionOrderLiteral.
+    def enterFormPropertyOptionOrderLiteral(self, ctx:LsfJSLogicsParser.FormPropertyOptionOrderLiteralContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formPropertyOptionOrderLiteral.
+    def exitFormPropertyOptionOrderLiteral(self, ctx:LsfJSLogicsParser.FormPropertyOptionOrderLiteralContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#formPropertyOptionFilterLiteral.
+    def enterFormPropertyOptionFilterLiteral(self, ctx:LsfJSLogicsParser.FormPropertyOptionFilterLiteralContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#formPropertyOptionFilterLiteral.
+    def exitFormPropertyOptionFilterLiteral(self, ctx:LsfJSLogicsParser.FormPropertyOptionFilterLiteralContext):
         pass
 
 
@@ -968,6 +1121,15 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#propertyExpressionOrCompoundID.
     def exitPropertyExpressionOrCompoundID(self, ctx:LsfJSLogicsParser.PropertyExpressionOrCompoundIDContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#propertyExpressionOrTrivialLAOrCompoundID.
+    def enterPropertyExpressionOrTrivialLAOrCompoundID(self, ctx:LsfJSLogicsParser.PropertyExpressionOrTrivialLAOrCompoundIDContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#propertyExpressionOrTrivialLAOrCompoundID.
+    def exitPropertyExpressionOrTrivialLAOrCompoundID(self, ctx:LsfJSLogicsParser.PropertyExpressionOrTrivialLAOrCompoundIDContext):
         pass
 
 
@@ -1376,6 +1538,15 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
+    # Enter a parse tree produced by LsfJSLogicsParser#activeTabDefinition.
+    def enterActiveTabDefinition(self, ctx:LsfJSLogicsParser.ActiveTabDefinitionContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#activeTabDefinition.
+    def exitActiveTabDefinition(self, ctx:LsfJSLogicsParser.ActiveTabDefinitionContext):
+        pass
+
+
     # Enter a parse tree produced by LsfJSLogicsParser#activePropertyDefinition.
     def enterActivePropertyDefinition(self, ctx:LsfJSLogicsParser.ActivePropertyDefinitionContext):
         pass
@@ -1463,6 +1634,15 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#groupObjectPropertyDefinition.
     def exitGroupObjectPropertyDefinition(self, ctx:LsfJSLogicsParser.GroupObjectPropertyDefinitionContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#propertyDrawPropertyDefinition.
+    def enterPropertyDrawPropertyDefinition(self, ctx:LsfJSLogicsParser.PropertyDrawPropertyDefinitionContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#propertyDrawPropertyDefinition.
+    def exitPropertyDrawPropertyDefinition(self, ctx:LsfJSLogicsParser.PropertyDrawPropertyDefinitionContext):
         pass
 
 
@@ -2042,15 +2222,6 @@ class LsfJSLogicsListener(ParseTreeListener):
         pass
 
 
-    # Enter a parse tree produced by LsfJSLogicsParser#shortcutSetting.
-    def enterShortcutSetting(self, ctx:LsfJSLogicsParser.ShortcutSettingContext):
-        pass
-
-    # Exit a parse tree produced by LsfJSLogicsParser#shortcutSetting.
-    def exitShortcutSetting(self, ctx:LsfJSLogicsParser.ShortcutSettingContext):
-        pass
-
-
     # Enter a parse tree produced by LsfJSLogicsParser#asonEventActionSetting.
     def enterAsonEventActionSetting(self, ctx:LsfJSLogicsParser.AsonEventActionSettingContext):
         pass
@@ -2093,24 +2264,6 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#formEventType.
     def exitFormEventType(self, ctx:LsfJSLogicsParser.FormEventTypeContext):
-        pass
-
-
-    # Enter a parse tree produced by LsfJSLogicsParser#onContextMenuEventSetting.
-    def enterOnContextMenuEventSetting(self, ctx:LsfJSLogicsParser.OnContextMenuEventSettingContext):
-        pass
-
-    # Exit a parse tree produced by LsfJSLogicsParser#onContextMenuEventSetting.
-    def exitOnContextMenuEventSetting(self, ctx:LsfJSLogicsParser.OnContextMenuEventSettingContext):
-        pass
-
-
-    # Enter a parse tree produced by LsfJSLogicsParser#onKeyPressEventSetting.
-    def enterOnKeyPressEventSetting(self, ctx:LsfJSLogicsParser.OnKeyPressEventSettingContext):
-        pass
-
-    # Exit a parse tree produced by LsfJSLogicsParser#onKeyPressEventSetting.
-    def exitOnKeyPressEventSetting(self, ctx:LsfJSLogicsParser.OnKeyPressEventSettingContext):
         pass
 
 
@@ -2507,6 +2660,15 @@ class LsfJSLogicsListener(ParseTreeListener):
 
     # Exit a parse tree produced by LsfJSLogicsParser#newWhereActionDefinitionBody.
     def exitNewWhereActionDefinitionBody(self, ctx:LsfJSLogicsParser.NewWhereActionDefinitionBodyContext):
+        pass
+
+
+    # Enter a parse tree produced by LsfJSLogicsParser#returnActionDefinitionBody.
+    def enterReturnActionDefinitionBody(self, ctx:LsfJSLogicsParser.ReturnActionDefinitionBodyContext):
+        pass
+
+    # Exit a parse tree produced by LsfJSLogicsParser#returnActionDefinitionBody.
+    def exitReturnActionDefinitionBody(self, ctx:LsfJSLogicsParser.ReturnActionDefinitionBodyContext):
         pass
 
 
