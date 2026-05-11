@@ -486,6 +486,37 @@ MODULE DESIGN RULES
 
 ----------------------------------------------------------------
 
+ACTION RULES
+
+1. The assistant MUST avoid `FOR` when the same result
+   can be expressed with a set-based construct.
+
+   `FOR` iterates row by row and SHOULD be the last resort
+   when no declarative alternative exists.
+
+   Prefer set-based alternatives, for example:
+   - aggregation or set materialization
+     -> `GROUP SUM`, `GROUP CONCAT`, `GROUP MAX`,
+        `GROUP LAST`, `GROUP AGGR`
+   - assigning a property over a set
+     -> direct property assignment with parameters
+        instead of a `FOR ... DO` loop
+   - exporting tabular or hierarchical data
+     -> `EXPORT FROM`, `EXPORT JSON FROM`,
+        `EXPORT XML FROM`, `EXPORT CSV FROM`
+   - building structured payloads
+     -> `JSON FROM`, `XML FROM`
+   - bulk integration writes
+     -> `NEW`, `DELETE`, or set-based property change
+        instead of a per-row `FOR`
+
+   `FOR` is acceptable when the body has genuine
+   per-row control flow such as conditional `APPLY`,
+   `MESSAGE`, `throwException`, or external calls
+   that cannot be expressed as a set operation.
+
+----------------------------------------------------------------
+
 CHANGE SESSION RULES (`NEWSESSION`, `NESTEDSESSION`, `APPLY`)
 
 1. Before introducing `NEWSESSION`, the assistant MUST decide
