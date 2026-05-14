@@ -4,11 +4,14 @@ openai>=1.40.0
 pinecone>=7.0.0
 antlr4-python3-runtime>=4.13,<4.14
 
-# fill.* runtime deps. Token counts and header-split heuristics from these
-# packages are inputs to section_payload_hash and to _merge_short_siblings'
-# threshold decision. Loose ranges keep two builds with different patch
-# versions agreeing on byte-level output. Bump intentionally and bump
-# CHUNKER_VERSION alongside if behavior changes.
-tiktoken>=0.7,<0.9
-langchain-text-splitters>=0.3,<0.4
-python-frontmatter>=1.0,<2.0
+# fill.* runtime deps. Token counts and header-split heuristics are
+# inputs to section_payload_hash AND to _merge_short_siblings' floor/cap
+# decision (chunker.py SHORT_SECTION_FLOOR_TOKENS=50, MERGE_SOFT_CAP_TOKENS=256).
+# A patch-version bump in tiktoken or langchain-text-splitters can shift
+# token counts at those boundaries and silently re-shape merged sections
+# without a CHUNKER_VERSION bump. Use EXACT pins to keep byte-level
+# output stable across environments; rotate intentionally and bump
+# CHUNKER_VERSION when these pins change.
+tiktoken==0.12.0
+langchain-text-splitters==1.1.2
+python-frontmatter==1.1.0

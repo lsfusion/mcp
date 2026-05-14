@@ -14,10 +14,15 @@ from fill.config import SOURCE_URL_VERSION  # re-exported, do not edit here
 
 # Bump when MarkdownHeaderTextSplitter config, how-to grouping rules, kebab
 # conversion, secondary-split parameters, or section_id grammar changes.
-# v2 (current): _merge_short_siblings — consecutive same-parent sections
-#   below MIN_SECTION_TOKENS get merged into one Section with composite
-#   section_id `{base}::{seg1}.{seg2}` and heading `{parent} > {seg1} + {seg2}`.
-CHUNKER_VERSION: str = "v2"
+# v3 (current): undersized-run merge — trigger on a single short section
+#   (cur < SHORT_SECTION_FLOOR_TOKENS=50), absorb consecutive same-parent
+#   siblings while accumulated body stays ≤ MERGE_SOFT_CAP_TOKENS=256 and
+#   either acc < floor or next < floor (so a stub merges with its
+#   explanatory neighbor even when the neighbor itself isn't tiny);
+#   stub detection — files whose body is exactly `### (Under development)`
+#   emit zero sections.
+# v2: _merge_short_siblings — both-short gate.
+CHUNKER_VERSION: str = "v3"
 
 # Reserved for future glossary preprocessing (DSL term aliasing, synonym
 # injection). Placeholder until ingest needs it.

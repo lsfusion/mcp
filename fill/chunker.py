@@ -72,10 +72,19 @@ SECONDARY_OVERLAP_TOKENS: int = 100
 # siblings (see `_merge_short_siblings`). Chosen so that typical 4-word
 # "## Syntax\n\nBREAK" type chunks (~5 tokens body, ~15 with prefix) get
 # absorbed into the next section, while 50-token bodies (already carrying
-# substantive sentences) stay on their own. The threshold is part of the
-# chunker contract — bumping CHUNKER_VERSION on a threshold change is the
-# safety net that triggers forced-full-scan on next ingest.
-MIN_SECTION_TOKENS: int = 50
+# substantive sentences) stay on their own.
+SHORT_SECTION_FLOOR_TOKENS: int = 50
+
+# Upper bound on the merged-body size. Keeps a small Syntax stub from
+# being absorbed into a long Examples (~500t) section that would dilute
+# both. Sized so `Syntax(5-50) + Description(50-200)` (the common operator
+# anatomy) fits comfortably, while `Examples(100-500)` only joins when
+# both parts are themselves modest.
+MERGE_SOFT_CAP_TOKENS: int = 256
+
+# Legacy alias kept for tests / external references; new code reads
+# `SHORT_SECTION_FLOOR_TOKENS` directly.
+MIN_SECTION_TOKENS = SHORT_SECTION_FLOOR_TOKENS
 
 # Tokenizer for size measurement. Plan acknowledges this is not necessarily
 # the embedding model's tokenizer — see plan §"One-section-one-chunk invariant".
@@ -263,16 +272,35 @@ class _DocLike:
 # ───────────────────────────── main entry point ──────────────────────────────
 
 
+_UNDER_DEVELOPMENT_MARKER = "### (Under development)"
+
+
+def _is_under_development_stub(body: str) -> bool:
+    """Detect placeholder docs whose ENTIRE body is the literal marker
+    `### (Under development)` (with optional surrounding whitespace).
+    Such files contribute only noise to the embedding space — better to
+    skip them than index a 5-token chunk whose vector is dominated by
+    the marker phrase. Exact match (after strip), no LLM, deterministic.
+    """
+    return body.strip() == _UNDER_DEVELOPMENT_MARKER
+
+
 def chunk_md(path: Path, source_type: SourceType, slug: str) -> list[Section]:
     """Read a `.md` file and produce its list of Section objects.
 
     `slug` is the canonical doc identifier (filename without `.md`), validated
     upstream by `fill.manifest`. `source_type` comes from manifest.json.
+
+    Returns `[]` for stub files whose body is exactly the
+    `### (Under development)` marker — they add noise without content.
     """
     raw = path.read_text(encoding="utf-8")
     fm = frontmatter.loads(raw)
     title = (fm.get("title") or slug).strip()
     body = fm.content
+
+    if _is_under_development_stub(body):
+        return []
 
     # Always prepend synthetic H1 so the preamble paragraph(s) inherit a
     # heading_path. If the body already has an explicit H1 the splitter
@@ -413,25 +441,36 @@ def _section_parent_heading_path(section: Section) -> str:
 
 def _merge_short_siblings(
     sections: list[Section],
-    min_tokens: int = MIN_SECTION_TOKENS,
+    floor: int = SHORT_SECTION_FLOOR_TOKENS,
+    soft_cap: int = MERGE_SOFT_CAP_TOKENS,
 ) -> list[Section]:
-    """Greedy left-to-right merger: consecutive sibling sections (same
-    parent section_id) whose individual bodies are each below `min_tokens`
-    fold into one Section, until the accumulator reaches the threshold or
-    the next section breaks the chain (different parent, large body,
-    non-mergeable kind).
+    """Greedy left-to-right merger driven by an undersized-RUN rule.
+
+    Trigger: a merge run starts when the current section is mergeable AND
+    its body is below `floor` (the "too small to stand alone" gate). This
+    is asymmetric — unlike v2, the *neighbor* doesn't have to be short.
+    A `Syntax(5) + Description(100)` pair therefore merges: the Syntax
+    side fires the trigger, the explanatory neighbor gets absorbed.
+
+    Continue while ALL of:
+      (a) next is mergeable AND same parent_heading_path,
+      (b) accumulated body stays within `soft_cap`,
+      (c) accumulator is still below floor OR next body is itself short.
+    Condition (c) prevents two healthy-sized siblings from merging just
+    because the first triggered the run; we only absorb large neighbors
+    when we still need help to clear the floor.
 
     Determinism: same input → same output. Identity is from input list
     order + content only; no randomness, no clock, no external state.
     Requires `tiktoken` and `langchain-text-splitters` versions pinned in
-    requirements.txt — otherwise a tokenizer drift across the 50-token
-    boundary could shift merge decisions.
+    requirements.txt — otherwise a tokenizer drift across the 50- or
+    256-token boundary could shift merge decisions.
 
     Incrementality (file-level, NOT section-level): unchanged files
     produce unchanged Section lists → unchanged hashes. Within a single
     file, edits to one section can shift merge boundaries and re-hash
-    unchanged sibling sections — e.g. growing section A from 35 → 50
-    tokens releases B and C from the (A.B,C) grouping into (A, B.C). This
+    unchanged sibling sections — e.g. a Description growing past the
+    soft cap will release a merged Syntax back to standalone. This
     same-file ripple is inherent to ANY merge strategy (and already
     present elsewhere: editing the H1 title or bumping PREFIX_VERSION
     re-hashes every section of the file). The ingest fast-path is
@@ -450,7 +489,7 @@ def _merge_short_siblings(
     while i < n:
         cur = sections[i]
         cur_tok = count_tokens(cur.raw_content)
-        if cur_tok >= min_tokens or not _is_mergeable(cur):
+        if cur_tok >= floor or not _is_mergeable(cur):
             result.append(cur)
             i += 1
             continue
@@ -459,16 +498,20 @@ def _merge_short_siblings(
         accumulated = [cur]
         acc_tok = cur_tok
         j = i + 1
-        while j < n and acc_tok < min_tokens:
+        while j < n:
             nxt = sections[j]
             if _section_parent_heading_path(nxt) != parent_hp:
                 break
             if not _is_mergeable(nxt):
                 break
             nxt_tok = count_tokens(nxt.raw_content)
-            # Don't absorb something that's already large enough to stand
-            # alone — that would dilute its embedding with adjacent noise.
-            if nxt_tok >= min_tokens:
+            # (b) Cap on merged body — keeps a small stub from being absorbed
+            # into a long Examples section that would dilute both.
+            if acc_tok + nxt_tok > soft_cap:
+                break
+            # (c) Only absorb a non-tiny neighbor when we still need help
+            # crossing the floor. Two healthy-sized siblings never merge.
+            if acc_tok >= floor and nxt_tok >= floor:
                 break
             accumulated.append(nxt)
             acc_tok += nxt_tok
@@ -489,13 +532,15 @@ def _build_merged_section(parts: list[Section], parent_hp: str) -> Section:
     share a common section_id prefix (the `{base}::` part) AND a common
     parent heading_path; callers enforce both via `_section_parent_heading_path`
     sibling-match. This function asserts the precondition so a future
-    caller can't quietly produce a misleading `Doc::syntax.examples` where
+    caller can't quietly produce a misleading `Doc::syntax+examples` where
     `examples` is not actually a sibling of `syntax`."""
     assert parts, "_build_merged_section requires at least one part"
 
     # section_id: keep the common prefix verbatim, glue last-segments with
-    # `.` (a SLUG_RE-permitted character) so the result is itself a valid
-    # section_id and round-trips through `_filename_for`.
+    # `+`. The kebab_case function never emits `+` (its allowlist is
+    # `[a-z0-9_\-=.]`), so a merged id `Doc::a+b` cannot collide with a
+    # natural single-heading kebab — even if a future header literally
+    # named "A.B" produces `Doc::a.b`, that's a different id.
     last_id_segs = [p.section_id.split("::")[-1] for p in parts]
     common_prefix = parts[0].section_id.rsplit("::", 1)[0]
 
@@ -511,9 +556,9 @@ def _build_merged_section(parts: list[Section], parent_hp: str) -> Section:
     if common_prefix == parts[0].section_id:
         # parts[0].section_id had no '::' — should never happen for non-
         # synthetic sections, but degrade gracefully.
-        merged_section_id = ".".join(last_id_segs)
+        merged_section_id = "+".join(last_id_segs)
     else:
-        merged_section_id = f"{common_prefix}::{'.'.join(last_id_segs)}"
+        merged_section_id = f"{common_prefix}::{'+'.join(last_id_segs)}"
 
     # heading_path: humans see ` + ` between last segments under the
     # shared parent path — visual hint that this is a merged chunk.

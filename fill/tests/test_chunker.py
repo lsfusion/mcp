@@ -64,9 +64,10 @@ def test_simple_split(tmp_path):
     assert sections[0].heading_path == "AGGR operator"
     assert sections[0].raw_content.startswith("Intro")
 
-    # Merged section: composite id with `.` separator (SLUG_RE-safe);
+    # Merged section: composite id uses `+` separator (outside kebab's
+    # allowed alphabet, so cannot collide with a natural heading kebab);
     # heading uses ` + ` for visual contrast under the shared parent.
-    assert sections[1].section_id == "AGGR_operator::syntax.examples"
+    assert sections[1].section_id == "AGGR_operator::syntax+examples"
     assert sections[1].heading_path == "AGGR operator > Syntax + Examples"
     assert sections[1].section_name == "Syntax + Examples"
     assert "AGGR clause" in sections[1].raw_content
@@ -463,8 +464,8 @@ def test_merge_short_siblings_combines_consecutive(tmp_path):
     p = write(tmp_path, "X.md", md)
     sections = chunk_md(p, "language", "X")
     # The two short H2s merge.
-    assert any(s.section_id == "X::syntax.examples" for s in sections)
-    merged = next(s for s in sections if s.section_id == "X::syntax.examples")
+    assert any(s.section_id == "X::syntax+examples" for s in sections)
+    merged = next(s for s in sections if s.section_id == "X::syntax+examples")
     assert merged.heading_path == "X > Syntax + Examples"
     assert merged.section_name == "Syntax + Examples"
     assert "foo" in merged.raw_content
@@ -491,32 +492,66 @@ def test_merge_not_across_parents(tmp_path):
     assert "X::a" in ids or "X::a::a-inner" in ids
 
 
-def test_merge_stops_at_threshold(tmp_path):
-    """Three short siblings: once the first two sum past MIN_SECTION_TOKENS,
-    the merger releases its accumulator and the third stays alone."""
-    # Each section: a short header + body of ~40 tokens (still < 50 alone,
-    # but two of them sum well past 50).
-    body = " ".join(["word"] * 35)  # ~35 tokens
+def test_undersized_run_absorbs_consecutive_shorts(tmp_path):
+    """Three short same-parent siblings A(35)+B(35)+C(35): the run
+    triggered by A keeps absorbing while either the accumulator is below
+    SHORT_SECTION_FLOOR_TOKENS or the next is below the floor.
+    A(35) → absorb B (acc=70, ≥ floor); next C(35) is still below floor →
+    keep absorbing (condition c). All three fold into one ~105t section,
+    well under MERGE_SOFT_CAP_TOKENS=256."""
+    body = " ".join(["word"] * 35)
     md = f"## A\n\n{body}\n\n## B\n\n{body}\n\n## C\n\n{body}\n"
     p = write(tmp_path, "Y.md", md)
     sections = chunk_md(p, "language", "Y")
     h2_ids = [s.section_id for s in sections if "Y::" in s.section_id]
-    # A and B merge (sum ~70 ≥ MIN), C stays alone.
-    assert "Y::a.b" in h2_ids
-    assert "Y::c" in h2_ids
+    assert "Y::a+b+c" in h2_ids
 
 
-def test_merge_does_not_absorb_large_neighbor(tmp_path):
-    """A short section adjacent to a large one stays alone — we never
-    dilute a substantial chunk by gluing a stub onto it."""
-    big = " ".join(["lorem"] * 200)  # ~200 tokens >> MIN
+def test_run_absorbs_large_neighbor_when_trigger_needs_help(tmp_path):
+    """Asymmetric merge — the v3 trigger is "cur is too small to stand
+    alone", NOT "both short". A 5-token Syntax should absorb a longer
+    Description (so long as the combined size stays under the soft cap)
+    so the embedding becomes substantive."""
+    big = " ".join(["lorem"] * 100)  # ~100 tokens >> floor=50, < cap=256
     md = f"## Short\n\nfoo\n\n## Big\n\n{big}\n"
     p = write(tmp_path, "Z.md", md)
     sections = chunk_md(p, "language", "Z")
     ids = [s.section_id for s in sections]
-    assert "Z::short" in ids
-    assert "Z::big" in ids
-    assert "Z::short.big" not in ids
+    assert "Z::short+big" in ids
+    # Neither original short nor original big remains as a standalone.
+    assert "Z::short" not in ids
+    assert "Z::big" not in ids
+
+
+def test_run_does_not_exceed_soft_cap(tmp_path):
+    """A short Syntax adjacent to a Description over the soft cap stays
+    alone — protects against `Syntax(5) + Description(300)` merge that
+    would dominate the embedding with one huge section."""
+    huge = " ".join(["lorem"] * 300)  # ~300t > MERGE_SOFT_CAP=256
+    md = f"## Short\n\nfoo\n\n## Huge\n\n{huge}\n"
+    p = write(tmp_path, "W.md", md)
+    sections = chunk_md(p, "language", "W")
+    ids = [s.section_id for s in sections]
+    assert "W::short" in ids
+    assert "W::huge" in ids
+    assert "W::short+huge" not in ids
+
+
+def test_run_does_not_glue_two_healthy_siblings(tmp_path):
+    """`A(60) + B(60)` — even though A is just above floor, condition
+    (c) `acc<floor OR next<floor` prevents two healthy siblings from
+    merging."""
+    body = " ".join(["word"] * 60)  # ~60 tokens, > floor
+    # Need a short trigger first; otherwise the run never starts.
+    short = "x"
+    md = f"## Tiny\n\n{short}\n\n## A\n\n{body}\n\n## B\n\n{body}\n"
+    p = write(tmp_path, "Q.md", md)
+    sections = chunk_md(p, "language", "Q")
+    ids = [s.section_id for s in sections]
+    # Tiny(~1t) absorbs A(60) → ~61t ≥ floor, then B is healthy too — stop.
+    assert "Q::tiny+a" in ids
+    assert "Q::b" in ids
+    assert "Q::tiny+a+b" not in ids
 
 
 def test_merge_skips_dup_sections(tmp_path):
@@ -594,25 +629,85 @@ def test_merge_is_deterministic_and_idempotent(tmp_path):
         == [(s.section_id, s.section_payload_hash) for s in s2]
 
 
-def test_merged_section_id_passes_filename_safety():
-    """Composite section_id `{base}::{seg1}.{seg2}` must round-trip through
-    the SLUG_RE / `_filename_for` contract — only `.`, `_`, `-`, `=`, and
-    alphanumerics. Pin the alphabet so a regression in `_build_merged_section`
-    would surface here."""
+def test_merged_section_id_uses_kebab_unsafe_separator():
+    """Composite section_id `{base}::{seg1}+{seg2}` uses `+` as the merge
+    separator. `+` is intentionally OUTSIDE `kebab_case`'s allowed
+    character set (`[a-z0-9_\\-=.]`), so a natural single-heading kebab
+    can NEVER produce a `+` and thus can NEVER collide with a merged id.
+    Pin the alphabet so a regression that switches back to `.` (which
+    kebab DOES allow) would surface here."""
     import re
-    composite = "AGGR_operator::syntax.examples.parameters"
-    # Mirror SLUG_RE used by manifest validator.
-    assert re.fullmatch(r"[A-Za-z0-9_\-=.:]+", composite)
-    # And the `::` → `__` filename transcoding survives.
+    composite = "AGGR_operator::syntax+examples+parameters"
+    # section_ids may include `+` (merge separator), `.` (kebab content),
+    # `:` (from `::` namespacing), and the standard kebab alphabet.
+    assert re.fullmatch(r"[A-Za-z0-9_\-=.:+]+", composite)
+    # Filename round-trip: `::` → `__`. `+` is filesystem-safe on Linux.
     fn = composite.replace("::", "__") + ".md"
     assert ":" not in fn  # `::` is the only colon source and it's gone
+    assert "+" in fn      # separator survives transcoding
+    # And the load-bearing invariant: kebab_case CANNOT produce `+`. If a
+    # future allowlist change adds `+` to _KEBAB_ALLOWED, this fails.
+    assert "+" not in kebab_case("syntax+examples")
+    assert "+" not in kebab_case("A+B")
 
 
-def test_chunker_version_pinned_at_v2():
-    """The merge behavior is on the v2 boundary. Bumping CHUNKER_VERSION
-    re-triggers a forced-full-scan via state sentinel drift (covered
-    end-to-end in test_state.test_needs_forced_full_scan_on_version_drift)."""
-    assert CHUNKER_VERSION == "v2"
+def test_merged_section_id_cannot_collide_with_kebab(tmp_path):
+    """Regression guard: if a future header literally named `A.B` exists
+    AND someone merges `## A` + `## B` in the same file, the merged id
+    `Doc::a+b` is structurally distinct from the natural kebab `Doc::a.b`."""
+    # Build a file where `## A.B` (single heading with `.` in the name)
+    # coexists with merged `## A` + `## B` siblings — impossible to
+    # construct cleanly in practice (different files would be needed),
+    # but the structural guarantee is: kebab grammar excludes `+`.
+    md = "## A\n\nshort\n\n## B\n\nshort\n"
+    p = write(tmp_path, "X.md", md)
+    sections = chunk_md(p, "paradigm", "X")
+    # The merged id uses `+`, not `.`, so no naming overlap is possible
+    # with a hypothetical `## A.B` header (whose kebab is `a.b`).
+    merged_ids = [s.section_id for s in sections if "+" in s.section_id]
+    assert merged_ids, f"expected at least one merged id, got {[s.section_id for s in sections]}"
+    for sid in merged_ids:
+        # The merge separator is exclusively `+`, never `.`, in the
+        # last segment.
+        last = sid.split("::")[-1]
+        assert "+" in last
+        # `.` would only appear from kebab content, not from merge —
+        # in this fixture there's no `.` content.
+        assert "." not in last
+
+
+def test_chunker_version_pinned_at_v3():
+    """The undersized-run merge + stub-detection behaviors are on the
+    v3 boundary. Bumping CHUNKER_VERSION re-triggers a forced-full-scan
+    via state sentinel drift (covered end-to-end in
+    test_state.test_needs_forced_full_scan_on_version_drift)."""
+    assert CHUNKER_VERSION == "v3"
+
+
+def test_under_development_stub_emits_no_sections(tmp_path):
+    """Files whose entire body is `### (Under development)` are placeholder
+    docs — they add no answerable knowledge. Skip them at the chunker level
+    so the index doesn't carry 5-token noise sections."""
+    md = "---\ntitle: 'Chat'\n---\n\n### (Under development)\n"
+    p = write(tmp_path, "Chat.md", md)
+    sections = chunk_md(p, "paradigm", "Chat")
+    assert sections == []
+
+
+def test_under_development_with_real_content_is_not_skipped(tmp_path):
+    """Marker + real content following it → not a stub, indexed normally.
+    Guards against over-eager skipping that would drop docs whose first
+    H3 happens to be `(Under development)` but which DO have body."""
+    md = (
+        "---\ntitle: 'Partial'\n---\n\n"
+        "### (Under development)\n\n"
+        "But here is some real content we DO want indexed.\n"
+        "It has actual substance worth embedding.\n"
+    )
+    p = write(tmp_path, "Partial.md", md)
+    sections = chunk_md(p, "paradigm", "Partial")
+    assert sections  # not empty
+    assert any("real content" in s.raw_content for s in sections)
 
 
 def test_task_force_header_is_not_excluded_from_merge(tmp_path):
@@ -625,7 +720,7 @@ def test_task_force_header_is_not_excluded_from_merge(tmp_path):
     sections = chunk_md(p, "language", "TF")
     ids = [s.section_id for s in sections]
     # Confirms merge happens (would NOT if "::task-" excluded by substring).
-    assert "TF::task-force.other" in ids
+    assert "TF::task-force+other" in ids
 
 
 def test_part_NN_secondary_split_is_not_merged(tmp_path):
