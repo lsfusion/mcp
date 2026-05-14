@@ -117,7 +117,9 @@ def validate(
         )
 
     for slug, rec in manifest.items():
-        if not SLUG_RE.match(slug):
+        # fullmatch (not match) — `re.match` with `^...$` accepts a trailing
+        # newline because `$` matches before the final \n by default.
+        if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug) or slug in (".", ".."):
             errors.append(f"manifest key {slug!r} does not match {SLUG_RE.pattern!r}")
         if not isinstance(rec, dict):
             errors.append(f"manifest[{slug!r}] must be an object, got {type(rec).__name__}")
