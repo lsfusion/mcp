@@ -3,3 +3,12 @@ fastmcp>=2.0.0,<3.0.0
 openai>=1.40.0
 pinecone>=7.0.0
 antlr4-python3-runtime>=4.13,<4.14
+
+# fill.* runtime deps. Token counts and header-split heuristics from these
+# packages are inputs to section_payload_hash and to _merge_short_siblings'
+# threshold decision. Loose ranges keep two builds with different patch
+# versions agreeing on byte-level output. Bump intentionally and bump
+# CHUNKER_VERSION alongside if behavior changes.
+tiktoken>=0.7,<0.9
+langchain-text-splitters>=0.3,<0.4
+python-frontmatter>=1.0,<2.0

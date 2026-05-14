@@ -68,6 +68,15 @@ PREFIX_TOKEN_BUDGET: int = 100
 
 SECONDARY_OVERLAP_TOKENS: int = 100
 
+# Sections below this token count are candidates for merging with adjacent
+# siblings (see `_merge_short_siblings`). Chosen so that typical 4-word
+# "## Syntax\n\nBREAK" type chunks (~5 tokens body, ~15 with prefix) get
+# absorbed into the next section, while 50-token bodies (already carrying
+# substantive sentences) stay on their own. The threshold is part of the
+# chunker contract — bumping CHUNKER_VERSION on a threshold change is the
+# safety net that triggers forced-full-scan on next ingest.
+MIN_SECTION_TOKENS: int = 50
+
 # Tokenizer for size measurement. Plan acknowledges this is not necessarily
 # the embedding model's tokenizer — see plan §"One-section-one-chunk invariant".
 TOKENIZER = tiktoken.get_encoding("cl100k_base")
@@ -369,7 +378,162 @@ def chunk_md(path: Path, source_type: SourceType, slug: str) -> list[Section]:
                 )
             sections.append(sub_section)
 
-    return sections
+    # Final post-processing: merge consecutive short sibling sections to
+    # raise the per-chunk semantic density. Deterministic, idempotent, and
+    # only operates on tokens we already produced — does not re-read the
+    # source or call the model.
+    return _merge_short_siblings(sections)
+
+
+_NON_MERGEABLE_SUFFIX = re.compile(r"::(task-\d{3}|dup-\d+|part-\d{2,})\b")
+
+
+def _is_mergeable(section: Section) -> bool:
+    """task/solution pairs (already grouped into one coherent unit),
+    explicit dup-N variants (semantic duplicates), and part-NN secondary-
+    split fragments (slices of one logical section) MUST stay separate.
+
+    Regex-anchored, NOT substring: a natural H2 like "Task-Force" → kebab
+    "task-force" → section_id `Doc::task-force` must remain mergeable —
+    substring `::task-` would falsely match.
+    """
+    return _NON_MERGEABLE_SUFFIX.search(section.section_id) is None
+
+
+def _section_parent_heading_path(section: Section) -> str:
+    """Return the parent heading_path. Sibling check uses this — NOT
+    section_id parent, because section_id parent for a top-level intro
+    (`{slug}::mydoc`) and a deeper H2 (`{slug}::syntax`) both equal
+    `{slug}`, falsely marking them siblings. Heading paths instead
+    correctly distinguish `MyDoc` (depth=1) from `MyDoc > Syntax` (depth=2).
+    """
+    hp_parts = section.heading_path.split(" > ")
+    return " > ".join(hp_parts[:-1]) if len(hp_parts) > 1 else ""
+
+
+def _merge_short_siblings(
+    sections: list[Section],
+    min_tokens: int = MIN_SECTION_TOKENS,
+) -> list[Section]:
+    """Greedy left-to-right merger: consecutive sibling sections (same
+    parent section_id) whose individual bodies are each below `min_tokens`
+    fold into one Section, until the accumulator reaches the threshold or
+    the next section breaks the chain (different parent, large body,
+    non-mergeable kind).
+
+    Determinism: same input → same output. Identity is from input list
+    order + content only; no randomness, no clock, no external state.
+    Requires `tiktoken` and `langchain-text-splitters` versions pinned in
+    requirements.txt — otherwise a tokenizer drift across the 50-token
+    boundary could shift merge decisions.
+
+    Incrementality (file-level, NOT section-level): unchanged files
+    produce unchanged Section lists → unchanged hashes. Within a single
+    file, edits to one section can shift merge boundaries and re-hash
+    unchanged sibling sections — e.g. growing section A from 35 → 50
+    tokens releases B and C from the (A.B,C) grouping into (A, B.C). This
+    same-file ripple is inherent to ANY merge strategy (and already
+    present elsewhere: editing the H1 title or bumping PREFIX_VERSION
+    re-hashes every section of the file). The ingest fast-path is
+    file_hash-gated, so any in-file content change already triggers a
+    full re-chunk of that file. Cross-file locality is preserved.
+
+    Reversibility: bumping `CHUNKER_VERSION` is the safety net for any
+    behavior shift here — it forces a forced-full-scan on next ingest.
+    """
+    if not sections:
+        return sections
+
+    result: list[Section] = []
+    i = 0
+    n = len(sections)
+    while i < n:
+        cur = sections[i]
+        cur_tok = count_tokens(cur.raw_content)
+        if cur_tok >= min_tokens or not _is_mergeable(cur):
+            result.append(cur)
+            i += 1
+            continue
+
+        parent_hp = _section_parent_heading_path(cur)
+        accumulated = [cur]
+        acc_tok = cur_tok
+        j = i + 1
+        while j < n and acc_tok < min_tokens:
+            nxt = sections[j]
+            if _section_parent_heading_path(nxt) != parent_hp:
+                break
+            if not _is_mergeable(nxt):
+                break
+            nxt_tok = count_tokens(nxt.raw_content)
+            # Don't absorb something that's already large enough to stand
+            # alone — that would dilute its embedding with adjacent noise.
+            if nxt_tok >= min_tokens:
+                break
+            accumulated.append(nxt)
+            acc_tok += nxt_tok
+            j += 1
+
+        if len(accumulated) == 1:
+            result.append(cur)
+            i += 1
+        else:
+            result.append(_build_merged_section(accumulated, parent_hp))
+            i = j
+
+    return result
+
+
+def _build_merged_section(parts: list[Section], parent_hp: str) -> Section:
+    """Stitch `parts` into a single Section. `parts` must be non-empty and
+    share a common section_id prefix (the `{base}::` part) AND a common
+    parent heading_path; callers enforce both via `_section_parent_heading_path`
+    sibling-match. This function asserts the precondition so a future
+    caller can't quietly produce a misleading `Doc::syntax.examples` where
+    `examples` is not actually a sibling of `syntax`."""
+    assert parts, "_build_merged_section requires at least one part"
+
+    # section_id: keep the common prefix verbatim, glue last-segments with
+    # `.` (a SLUG_RE-permitted character) so the result is itself a valid
+    # section_id and round-trips through `_filename_for`.
+    last_id_segs = [p.section_id.split("::")[-1] for p in parts]
+    common_prefix = parts[0].section_id.rsplit("::", 1)[0]
+
+    # Verify the precondition: every part shares parts[0]'s common prefix.
+    for p in parts[1:]:
+        p_prefix = p.section_id.rsplit("::", 1)[0]
+        assert p_prefix == common_prefix, (
+            f"_build_merged_section: parts disagree on section_id common prefix "
+            f"({parts[0].section_id!r} vs {p.section_id!r}). "
+            f"Callers must filter by _section_parent_heading_path first."
+        )
+
+    if common_prefix == parts[0].section_id:
+        # parts[0].section_id had no '::' — should never happen for non-
+        # synthetic sections, but degrade gracefully.
+        merged_section_id = ".".join(last_id_segs)
+    else:
+        merged_section_id = f"{common_prefix}::{'.'.join(last_id_segs)}"
+
+    # heading_path: humans see ` + ` between last segments under the
+    # shared parent path — visual hint that this is a merged chunk.
+    last_hp_segs = [p.heading_path.split(" > ")[-1] for p in parts]
+    merged_last = " + ".join(last_hp_segs)
+    merged_heading = f"{parent_hp} > {merged_last}" if parent_hp else merged_last
+
+    # Content: glue with blank lines, stripping nothing else so the
+    # original Markdown structure of each part is preserved.
+    merged_content = "\n\n".join(p.raw_content for p in parts if p.raw_content)
+
+    return Section(
+        slug=parts[0].slug,
+        section_id=merged_section_id,
+        section_name=merged_last,
+        heading_path=merged_heading,
+        source_url=parts[0].source_url,
+        source_type=parts[0].source_type,
+        raw_content=merged_content,
+    )
 
 
 def _prefix(source_type: SourceType, segments: list[str]) -> str:

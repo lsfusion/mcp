@@ -14,7 +14,10 @@ from fill.config import SOURCE_URL_VERSION  # re-exported, do not edit here
 
 # Bump when MarkdownHeaderTextSplitter config, how-to grouping rules, kebab
 # conversion, secondary-split parameters, or section_id grammar changes.
-CHUNKER_VERSION: str = "v1"
+# v2 (current): _merge_short_siblings — consecutive same-parent sections
+#   below MIN_SECTION_TOKENS get merged into one Section with composite
+#   section_id `{base}::{seg1}.{seg2}` and heading `{parent} > {seg1} + {seg2}`.
+CHUNKER_VERSION: str = "v2"
 
 # Reserved for future glossary preprocessing (DSL term aliasing, synonym
 # injection). Placeholder until ingest needs it.

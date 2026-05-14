@@ -21,6 +21,13 @@ def _write_md(path: Path, title: str, body: str) -> None:
     path.write_text(f"---\ntitle: {title}\n---\n\n{body}\n", encoding="utf-8")
 
 
+# Body filler that's long enough (>50 tokens) so the chunker's
+# `_merge_short_siblings` doesn't fuse adjacent H2 sections. Tests in this
+# module reason about per-section state and would silently change shape if
+# the merger absorbed them.
+_LONG_BODY = "Some content sentence that is long enough to live alone. " * 12
+
+
 @pytest.fixture
 def docs(tmp_path: Path) -> Path:
     d = tmp_path / "docs"
@@ -41,7 +48,7 @@ def _frozen_clock(stamp: str = "2026-05-14T12:00:00Z"):
 
 def test_new_file_uploads_all_sections(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n\n## Examples\n\nbar\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n\n## Examples\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
 
@@ -86,7 +93,7 @@ def test_new_file_uploads_all_sections(docs):
 
 def test_fast_path_skips_unchanged_file(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
 
@@ -119,7 +126,7 @@ def test_fast_path_skips_unchanged_file(docs):
 
 def test_fast_path_busted_by_sourcetype_change(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     common = dict(
@@ -156,7 +163,7 @@ def test_fast_path_busted_by_sourcetype_change(docs):
 
 def test_changed_file_reuploads_only_changed_sections(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n\n## Examples\n\nbar\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n\n## Examples\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     common = dict(
@@ -171,7 +178,7 @@ def test_changed_file_reuploads_only_changed_sections(docs):
     initial_recs = {sid: srec.file_id for sid, srec in state.files[_src(p, docs)].sections.items()}
 
     # Modify only the "Examples" section — "Syntax" hash must stay.
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n\n## Examples\n\nbar baz different\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n\n## Examples\n\n{_LONG_BODY} distinct modification\n")
     stats = ingest_files(state, client, **common)
 
     assert stats.files_processed == 1
@@ -196,7 +203,7 @@ def test_changed_file_reuploads_only_changed_sections(docs):
 
 def test_changed_file_drops_disappeared_sections(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n\n## Examples\n\nbar\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n\n## Examples\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     common = dict(
@@ -212,7 +219,7 @@ def test_changed_file_drops_disappeared_sections(docs):
     assert initial_section_count >= 2
 
     # Drop "Examples" entirely.
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     stats = ingest_files(state, client, **common)
 
     final_section_count = len(state.files[_src(p, docs)].sections)
@@ -229,7 +236,7 @@ def test_changed_file_drops_disappeared_sections(docs):
 
 def test_removed_file_deletes_all_sections_and_drops_record(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n\n## Examples\n\nbar\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n\n## Examples\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     common = dict(
@@ -285,7 +292,7 @@ def test_removed_file_unknown_to_state_is_noop(docs):
 
 def test_upload_failure_marks_file_stale(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     # Refuse uploads for any section_id matching the H1.
@@ -321,7 +328,7 @@ def test_upload_failure_marks_file_stale(docs):
 
 def test_old_delete_failure_marks_file_stale_but_keeps_new_upload(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     common = dict(
@@ -335,7 +342,7 @@ def test_old_delete_failure_marks_file_stale_but_keeps_new_upload(docs):
     original_file_ids = [srec.file_id for srec in state.files[_src(p, docs)].sections.values()]
     client.fail_delete_for_file_id.update(original_file_ids)
 
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo modified\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY} modified marker\n")
     stats = ingest_files(state, client, **common)
 
     assert state.files[_src(p, docs)].stale is True
@@ -347,7 +354,7 @@ def test_old_delete_failure_marks_file_stale_but_keeps_new_upload(docs):
 
 def test_chunker_failure_marks_file_stale(docs, monkeypatch):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
 
@@ -396,7 +403,7 @@ def test_read_failure_marks_file_stale(docs):
 
 def test_upload_attributes_include_all_required_keys(docs):
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
 
@@ -425,8 +432,8 @@ def test_upload_attributes_include_all_required_keys(docs):
 def test_multi_file_independent_processing(docs):
     p1 = docs / "AGGR.md"
     p2 = docs / "OTHER.md"
-    _write_md(p1, "AGGR", "## A\n\naaa\n")
-    _write_md(p2, "OTHER", "## B\n\nbbb\n")
+    _write_md(p1, "AGGR", f"## A\n\n{_LONG_BODY}\n")
+    _write_md(p2, "OTHER", f"## B\n\n{_LONG_BODY}\n")
 
     state = State()
     client = FakeVectorStoreClient()
@@ -471,7 +478,7 @@ def test_stale_recovery_then_fast_path(docs):
     """The main lifecycle: upload fails → stale=True → next run rechunks +
     succeeds → stale=False → third run with no changes fast-paths."""
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     common = dict(
@@ -511,8 +518,8 @@ def test_one_file_failure_does_not_block_others(docs):
     """If file1's upload fails, file2 must still be fully processed."""
     p1 = docs / "AGGR.md"
     p2 = docs / "OTHER.md"
-    _write_md(p1, "AGGR", "## A\n\naaa\n")
-    _write_md(p2, "OTHER", "## B\n\nbbb\n")
+    _write_md(p1, "AGGR", f"## A\n\n{_LONG_BODY}\n")
+    _write_md(p2, "OTHER", f"## B\n\n{_LONG_BODY}\n")
 
     state = State()
     client = FakeVectorStoreClient()
@@ -549,7 +556,7 @@ def test_removed_file_partial_delete_failure_keeps_record(docs):
     """If one section's delete fails during Case B, the FileRecord stays in
     state (marked stale) so the next run can retry."""
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n\n## Examples\n\nbar\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n\n## Examples\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     common = dict(
@@ -591,8 +598,8 @@ def test_setup_error_does_not_abort_run(docs):
     """If `source_type_for` raises for file1, the run continues to file2."""
     p1 = docs / "AGGR.md"
     p2 = docs / "OTHER.md"
-    _write_md(p1, "AGGR", "## A\n\naaa\n")
-    _write_md(p2, "OTHER", "## B\n\nbbb\n")
+    _write_md(p1, "AGGR", f"## A\n\n{_LONG_BODY}\n")
+    _write_md(p2, "OTHER", f"## B\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
 
@@ -627,7 +634,7 @@ def test_parallel_upload_assigns_all_sections(docs):
         _write_md(
             docs / f"DOC{i:02d}.md",
             f"DOC{i:02d}",
-            "\n".join(f"## S{j}\n\nbody-{i}-{j}\n" for j in range(4)),
+            "\n".join(f"## S{j}\n\n{_LONG_BODY} doc-{i}-sec-{j}\n" for j in range(4)),
         )
     state = State()
     client = FakeVectorStoreClient()
@@ -678,7 +685,7 @@ def test_max_workers_one_is_serial_and_still_correct(docs):
     """Single-worker mode disables parallelism but must still produce the
     same state shape. Useful for debugging or rate-limited environments."""
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR", "## A\n\naaa\n\n## B\n\nbbb\n")
+    _write_md(p, "AGGR", f"## A\n\n{_LONG_BODY}\n\n## B\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     stats = ingest_files(
@@ -700,7 +707,7 @@ def test_filename_drops_redundant_slug_prefix(docs):
     section_id (with `::` → `__`). Catches a regression where the slug
     was prepended a second time, producing `AGGR--AGGR__syntax.md`."""
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR", f"## Syntax\n\n{_LONG_BODY}\n")
     state = State()
     client = FakeVectorStoreClient()
     ingest_files(
@@ -721,7 +728,7 @@ def test_filename_drops_redundant_slug_prefix(docs):
 def test_attributes_idempotent_across_unchanged_reuploads(docs):
     """Same content → same attributes byte-for-byte (no `indexed_at` field)."""
     p = docs / "AGGR.md"
-    _write_md(p, "AGGR operator", "## Syntax\n\nfoo\n")
+    _write_md(p, "AGGR operator", f"## Syntax\n\n{_LONG_BODY}\n")
     common = dict(
         files_to_process=[p], files_removed=[],
         docs_root=docs,

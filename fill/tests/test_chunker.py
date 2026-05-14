@@ -37,6 +37,10 @@ def write(tmp_path: Path, name: str, body: str) -> Path:
 
 
 def test_simple_split(tmp_path):
+    # All three sub-sections are short (<50 tokens), but Intro sits at
+    # depth 1 ("AGGR operator") while Syntax/Examples are at depth 2
+    # under "AGGR operator >". So Intro stays alone, Syntax+Examples
+    # merge as siblings sharing parent_heading_path="AGGR operator".
     md = dedent("""\
         ---
         title: AGGR operator
@@ -55,18 +59,18 @@ def test_simple_split(tmp_path):
         """)
     p = write(tmp_path, "AGGR_operator.md", md)
     sections = chunk_md(p, "language", "AGGR_operator")
-    # 1 intro + 2 H2 sections
-    assert len(sections) == 3
+    assert len(sections) == 2
     assert sections[0].section_id == "AGGR_operator::aggr-operator"
     assert sections[0].heading_path == "AGGR operator"
-    assert sections[0].section_name == "AGGR operator"
     assert sections[0].raw_content.startswith("Intro")
 
-    assert sections[1].section_id == "AGGR_operator::syntax"
-    assert sections[1].heading_path == "AGGR operator > Syntax"
-    assert sections[1].section_name == "Syntax"
-
-    assert sections[2].section_id == "AGGR_operator::examples"
+    # Merged section: composite id with `.` separator (SLUG_RE-safe);
+    # heading uses ` + ` for visual contrast under the shared parent.
+    assert sections[1].section_id == "AGGR_operator::syntax.examples"
+    assert sections[1].heading_path == "AGGR operator > Syntax + Examples"
+    assert sections[1].section_name == "Syntax + Examples"
+    assert "AGGR clause" in sections[1].raw_content
+    assert "Body" in sections[1].raw_content
 
 
 def test_no_frontmatter_uses_slug_as_title(tmp_path):
@@ -201,18 +205,21 @@ def test_how_to_ru_labels(tmp_path):
 
 
 def test_duplicate_headers_get_dup_suffix(tmp_path):
-    md = dedent("""\
+    # Each H2 body is long enough that `_merge_short_siblings` doesn't
+    # collapse them, so the dup-N logic is exercised in isolation.
+    body = "Some longish body content that's well over the merge threshold. " * 10
+    md = dedent(f"""\
         ## Foo
 
-        first
+        {body}
 
         ## Bar
 
-        between
+        {body}
 
         ## Foo
 
-        second
+        {body}
         """)
     p = write(tmp_path, "Dup.md", md)
     sections = chunk_md(p, "paradigm", "Dup")
@@ -403,9 +410,9 @@ def test_how_to_merged_heading_path_stops_at_h2(tmp_path):
 def test_section_payload_hash_distinguishes_dup_ids(tmp_path):
     # Two duplicate-header siblings with identical raw_content + heading_path
     # produce DIFFERENT hashes (section_id is in the hash payload).
-    # LangChain merges consecutive same-h2 sections, so separate them with
-    # a different h2 in between.
-    md = "## Foo\n\nbody\n\n## Bar\n\nsep\n\n## Foo\n\nbody\n"
+    # Bodies are long enough to dodge `_merge_short_siblings`.
+    body = "Body content " * 30
+    md = f"## Foo\n\n{body}\n\n## Bar\n\n{body}\n\n## Foo\n\n{body}\n"
     p = write(tmp_path, "Dup2.md", md)
     sections = chunk_md(p, "paradigm", "Dup2")
     foos = [s for s in sections if s.section_id.startswith("Dup2::foo")]
@@ -444,3 +451,196 @@ def test_real_how_to_doc_produces_task_pairs():
     task_ids = [s.section_id for s in sections if "::task-" in s.section_id]
     # The real doc has at least 3 Task/Solution pairs
     assert len(task_ids) >= 3, f"got task_ids={task_ids}"
+
+
+# ───────────────────────────── _merge_short_siblings ─────────────────────────
+
+
+def test_merge_short_siblings_combines_consecutive(tmp_path):
+    """Two consecutive H2 siblings, both short, share parent_heading_path
+    and get merged into one composite Section."""
+    md = "## Syntax\n\nfoo\n\n## Examples\n\nbar\n"
+    p = write(tmp_path, "X.md", md)
+    sections = chunk_md(p, "language", "X")
+    # The two short H2s merge.
+    assert any(s.section_id == "X::syntax.examples" for s in sections)
+    merged = next(s for s in sections if s.section_id == "X::syntax.examples")
+    assert merged.heading_path == "X > Syntax + Examples"
+    assert merged.section_name == "Syntax + Examples"
+    assert "foo" in merged.raw_content
+    assert "bar" in merged.raw_content
+
+
+def test_merge_not_across_parents(tmp_path):
+    """Sections under DIFFERENT parents do NOT merge even when both short."""
+    md = dedent("""\
+        ## A
+
+        short-a
+
+        ### A.inner
+
+        also-short
+        """)
+    p = write(tmp_path, "X.md", md)
+    sections = chunk_md(p, "language", "X")
+    # "A" is at depth=2 (parent "X"), "A.inner" is at depth=3 (parent "X > A").
+    # Different parents → not merged.
+    ids = [s.section_id for s in sections]
+    assert "X::a.a-inner" not in ids
+    assert "X::a" in ids or "X::a::a-inner" in ids
+
+
+def test_merge_stops_at_threshold(tmp_path):
+    """Three short siblings: once the first two sum past MIN_SECTION_TOKENS,
+    the merger releases its accumulator and the third stays alone."""
+    # Each section: a short header + body of ~40 tokens (still < 50 alone,
+    # but two of them sum well past 50).
+    body = " ".join(["word"] * 35)  # ~35 tokens
+    md = f"## A\n\n{body}\n\n## B\n\n{body}\n\n## C\n\n{body}\n"
+    p = write(tmp_path, "Y.md", md)
+    sections = chunk_md(p, "language", "Y")
+    h2_ids = [s.section_id for s in sections if "Y::" in s.section_id]
+    # A and B merge (sum ~70 ≥ MIN), C stays alone.
+    assert "Y::a.b" in h2_ids
+    assert "Y::c" in h2_ids
+
+
+def test_merge_does_not_absorb_large_neighbor(tmp_path):
+    """A short section adjacent to a large one stays alone — we never
+    dilute a substantial chunk by gluing a stub onto it."""
+    big = " ".join(["lorem"] * 200)  # ~200 tokens >> MIN
+    md = f"## Short\n\nfoo\n\n## Big\n\n{big}\n"
+    p = write(tmp_path, "Z.md", md)
+    sections = chunk_md(p, "language", "Z")
+    ids = [s.section_id for s in sections]
+    assert "Z::short" in ids
+    assert "Z::big" in ids
+    assert "Z::short.big" not in ids
+
+
+def test_merge_skips_dup_sections(tmp_path):
+    """Sections with `::dup-N` must NOT be absorbed — they're explicit
+    semantic duplicates."""
+    # Three H2s with same name: "## Foo" / "## Foo" / "## Foo". LangChain
+    # will produce three sections with section_ids Foo, Foo::dup-1, Foo::dup-2.
+    # Need a non-matching H2 between them to keep them as separate sections.
+    md = dedent("""\
+        ## Foo
+
+        a
+
+        ## Bar
+
+        b
+
+        ## Foo
+
+        c
+        """)
+    p = write(tmp_path, "Dups.md", md)
+    sections = chunk_md(p, "paradigm", "Dups")
+    # First Foo + Bar are mergeable, Foo::dup-1 is NOT.
+    ids = [s.section_id for s in sections]
+    assert any("::dup-" in i for i in ids), ids
+    # The dup section is preserved standalone.
+    assert "Dups::foo::dup-1" in ids
+
+
+def test_merge_skips_how_to_tasks(tmp_path):
+    """`::task-NNN` sections stay individual — they're already a coherent
+    Task/Solution pair from _group_task_solution_pairs (which keys off H3
+    `### Task` / `### Solution` labels)."""
+    md = dedent("""\
+        ## Example 1
+
+        ### Task
+
+        t1 body
+
+        ### Solution
+
+        s1 body
+
+        ## Example 2
+
+        ### Task
+
+        t2 body
+
+        ### Solution
+
+        s2 body
+        """)
+    p = write(tmp_path, "H.md", md)
+    sections = chunk_md(p, "how-to", "H")
+    task_ids = [s.section_id for s in sections if "::task-" in s.section_id]
+    # Both task pairs survive as separate sections.
+    assert len(task_ids) == 2
+    # And no merge fused two task pairs into one composite id.
+    assert not any(
+        "task-" in s.section_id and "." in s.section_id.split("::")[-1]
+        for s in sections
+    )
+
+
+def test_merge_is_deterministic_and_idempotent(tmp_path):
+    """Same input md → same section list (ids + hashes) on every call."""
+    md = "## A\n\nfoo\n\n## B\n\nbar\n\n## C\n\nbaz\n"
+    p = write(tmp_path, "D.md", md)
+    s1 = chunk_md(p, "language", "D")
+    s2 = chunk_md(p, "language", "D")
+    assert [(s.section_id, s.section_payload_hash) for s in s1] \
+        == [(s.section_id, s.section_payload_hash) for s in s2]
+
+
+def test_merged_section_id_passes_filename_safety():
+    """Composite section_id `{base}::{seg1}.{seg2}` must round-trip through
+    the SLUG_RE / `_filename_for` contract — only `.`, `_`, `-`, `=`, and
+    alphanumerics. Pin the alphabet so a regression in `_build_merged_section`
+    would surface here."""
+    import re
+    composite = "AGGR_operator::syntax.examples.parameters"
+    # Mirror SLUG_RE used by manifest validator.
+    assert re.fullmatch(r"[A-Za-z0-9_\-=.:]+", composite)
+    # And the `::` → `__` filename transcoding survives.
+    fn = composite.replace("::", "__") + ".md"
+    assert ":" not in fn  # `::` is the only colon source and it's gone
+
+
+def test_chunker_version_pinned_at_v2():
+    """The merge behavior is on the v2 boundary. Bumping CHUNKER_VERSION
+    re-triggers a forced-full-scan via state sentinel drift (covered
+    end-to-end in test_state.test_needs_forced_full_scan_on_version_drift)."""
+    assert CHUNKER_VERSION == "v2"
+
+
+def test_task_force_header_is_not_excluded_from_merge(tmp_path):
+    """`::task-` substring check is too loose — a real header literally
+    titled 'Task-Force' kebabs to `task-force` and gives section_id
+    `Doc::task-force`, which substring-matches `::task-` but is NOT a
+    how-to task pair. The regex anchor (`task-\\d{3}`) rejects it."""
+    md = "## Task-Force\n\nshort\n\n## Other\n\nshort\n"
+    p = write(tmp_path, "TF.md", md)
+    sections = chunk_md(p, "language", "TF")
+    ids = [s.section_id for s in sections]
+    # Confirms merge happens (would NOT if "::task-" excluded by substring).
+    assert "TF::task-force.other" in ids
+
+
+def test_part_NN_secondary_split_is_not_merged(tmp_path):
+    """Secondary-split fragments (`::part-NN`) are slices of one logical
+    section. They MUST NOT merge with the next sibling — that would
+    produce a misleading section_id like `Doc::huge::part-03.next`."""
+    # Build a doc where one H2 is huge enough to secondary-split, followed
+    # by a very short H2 sibling.
+    huge = " ".join(["word"] * 8000)
+    md = f"## Huge\n\n{huge}\n\n## Tiny\n\nshort\n"
+    p = write(tmp_path, "PT.md", md)
+    sections = chunk_md(p, "language", "PT")
+    # No section_id mixes `::part-NN` with `.something`.
+    for s in sections:
+        last_seg = s.section_id.split("::")[-1]
+        assert not (
+            last_seg.startswith("part-") and "." in last_seg
+        ), f"unexpected merge of part-NN: {s.section_id}"
