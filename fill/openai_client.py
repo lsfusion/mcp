@@ -118,3 +118,9 @@ class FakeVectorStoreClient:
     @property
     def file_count(self) -> int:
         return len(self._files)
+
+    def preload(self, file_id: str, attributes: dict[str, AttrValue], content: str = "") -> None:
+        """Inject a VS entry with a chosen file_id, bypassing the upload log.
+        For tests that reason about VS state (e.g. fill.reconcile) rather
+        than how it got there."""
+        self._files[file_id] = (content, dict(attributes))
