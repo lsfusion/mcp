@@ -311,7 +311,7 @@ def test_check_bootstrap_report_without_placeholder(tmp_path):
     report.write_text("no marker here")
     r = check_bootstrap_acceptance(report, pr_description="BOOTSTRAP_DEFAULTS_REVIEWED: 5")
     assert r.ok is False
-    assert any("no BOOTSTRAP_DEFAULTS_REVIEWED" in e for e in r.errors)
+    assert any("BOOTSTRAP_DEFAULTS_REVIEWED" in e and "line found" in e for e in r.errors)
 
 
 # ─── CLI exit codes ────────────────────────────────────────────────────────────
