@@ -76,18 +76,42 @@ class _MockVSFiles:
         self.create_and_poll_calls: list[dict[str, Any]] = []
         self.delete_calls: list[dict[str, Any]] = []
         self.list_calls: list[dict[str, Any]] = []
+        self.retrieve_calls: list[dict[str, Any]] = []
         self.create_and_poll_response: _MockVSFile | None = None
         self.create_and_poll_raises: Exception | None = None
+        # Sequential responses for retry tests. Pops one entry per call.
+        # Element can be an Exception (raised) or a _MockVSFile (returned).
+        self.create_and_poll_side_effects: list[Any] = []
         self.delete_raises: dict[str, Exception] = {}
         self.list_pages: list[_MockPage] = []
+        # Probe-retrieve hook for race-recovery testing. Default None →
+        # the retrieve falls through to a stub return with status=missing
+        # (so the production code's `if status == _TERMINAL_OK` is False).
+        self.retrieve_response: _MockVSFile | None = None
+        self.retrieve_raises: Exception | None = None
 
     def create_and_poll(self, **kwargs) -> _MockVSFile:
         self.create_and_poll_calls.append(kwargs)
+        if self.create_and_poll_side_effects:
+            item = self.create_and_poll_side_effects.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
         if self.create_and_poll_raises:
             raise self.create_and_poll_raises
         if self.create_and_poll_response is None:
             return _MockVSFile(id=kwargs["file_id"], attributes=kwargs.get("attributes"))
         return self.create_and_poll_response
+
+    def retrieve(self, **kwargs) -> _MockVSFile:
+        self.retrieve_calls.append(kwargs)
+        if self.retrieve_raises:
+            raise self.retrieve_raises
+        if self.retrieve_response is None:
+            # Default: report unknown / not-yet-attached so the recovery
+            # branch falls through to either retry or surface the original.
+            return _MockVSFile(id=kwargs["file_id"], status="unknown")
+        return self.retrieve_response
 
     def delete(self, **kwargs) -> Any:
         self.delete_calls.append(kwargs)
@@ -498,3 +522,192 @@ def test_delete_section_step2_non_notfound_propagates(monkeypatch):
     assert mock.vector_stores.files.delete_calls == [
         {"vector_store_id": "vs_xxx", "file_id": "file-abc"}
     ]
+
+
+# ─── attach 404 retry (eventual consistency recovery) ────────────────────────
+
+
+def _build_attach_404(file_id: str, vs_id: str = "vs_xxx") -> Exception:
+    """Construct an OpenAI NotFoundError that matches the production error
+    surface (`Error code: 404 - {'error': {'message': 'No file found with
+    id X in vector store Y.', ...}}`). The `_is_retryable_attach_not_found`
+    pattern matcher keys off `file_id`, "No file found with id", and
+    "vector store"."""
+    from openai import NotFoundError  # injected by _install_openai_notfound_shim
+    return NotFoundError(
+        f"Error code: 404 - No file found with id '{file_id}' in vector store {vs_id}."
+    )
+
+
+def test_upload_section_retries_transient_attach_404(monkeypatch):
+    """Transient 404 on first create_and_poll → wait → retry → success.
+    No orphan File cleanup, no propagated error."""
+    _install_openai_notfound_shim(monkeypatch)
+    mock = MockOpenAI()
+    err = _build_attach_404("file-000")
+    mock.vector_stores.files.create_and_poll_side_effects = [
+        err,
+        _MockVSFile(id="file-000", status="completed"),
+    ]
+    sleeps: list[float] = []
+    c = OpenAIVectorStoreClient(
+        "vs_xxx",
+        client=mock,
+        attach_retry_delays_seconds=(0.5, 1.0),
+        sleep=sleeps.append,
+    )
+    fid = c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+    assert fid == "file-000"
+    # Two create_and_poll attempts (first 404, second success).
+    assert len(mock.vector_stores.files.create_and_poll_calls) == 2
+    # Slept once between attempts.
+    assert sleeps == [0.5]
+    # No orphan deleted.
+    assert mock.files.delete_calls == []
+
+
+def test_upload_section_retrieve_short_circuits_retry(monkeypatch):
+    """After the first backoff sleep, if retrieve sees the file as
+    `completed`, return immediately without another create_and_poll call.
+    Saves a redundant attach for the eventual-consistency win case."""
+    _install_openai_notfound_shim(monkeypatch)
+    mock = MockOpenAI()
+    err = _build_attach_404("file-000")
+    mock.vector_stores.files.create_and_poll_side_effects = [err]
+    mock.vector_stores.files.retrieve_response = _MockVSFile(
+        id="file-000", status="completed"
+    )
+    sleeps: list[float] = []
+    c = OpenAIVectorStoreClient(
+        "vs_xxx",
+        client=mock,
+        attach_retry_delays_seconds=(0.5, 1.0),
+        sleep=sleeps.append,
+    )
+    fid = c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+    assert fid == "file-000"
+    # Single create_and_poll attempt, retrieve resolved after the first sleep.
+    assert len(mock.vector_stores.files.create_and_poll_calls) == 1
+    assert mock.vector_stores.files.retrieve_calls == [
+        {"vector_store_id": "vs_xxx", "file_id": "file-000"}
+    ]
+    # Slept once (after 404), then retrieve won.
+    assert sleeps == [0.5]
+    assert mock.files.delete_calls == []
+
+
+def test_upload_section_terminal_failed_via_retrieve_aborts_retry(monkeypatch):
+    """If retrieve during a retry observes status='failed', stop retrying
+    immediately — re-attaching wouldn't recover. The orphan File still
+    gets cleaned up via upload_section's except branch."""
+    _install_openai_notfound_shim(monkeypatch)
+    mock = MockOpenAI()
+    err = _build_attach_404("file-000")
+    mock.vector_stores.files.create_and_poll_side_effects = [err, err]
+    mock.vector_stores.files.retrieve_response = _MockVSFile(
+        id="file-000", status="failed", last_error={"code": "indexing_error"}
+    )
+    sleeps: list[float] = []
+    c = OpenAIVectorStoreClient(
+        "vs_xxx",
+        client=mock,
+        attach_retry_delays_seconds=(0.1, 0.2),
+        sleep=sleeps.append,
+    )
+    with pytest.raises(RuntimeError, match="status='failed'"):
+        c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+    # Only ONE attach attempt — retrieve aborted the loop after first sleep.
+    assert len(mock.vector_stores.files.create_and_poll_calls) == 1
+    assert sleeps == [0.1]
+    # Orphan cleaned.
+    assert mock.files.delete_calls == ["file-000"]
+
+
+def test_upload_section_exhausts_retries_then_cleans_up(monkeypatch):
+    """All retries return 404 AND retrieve never sees the file → final
+    exception propagates, orphan File is deleted."""
+    _install_openai_notfound_shim(monkeypatch)
+    mock = MockOpenAI()
+    err = _build_attach_404("file-000")
+    mock.vector_stores.files.create_and_poll_side_effects = [err, err, err]
+    mock.vector_stores.files.retrieve_raises = err
+    sleeps: list[float] = []
+    c = OpenAIVectorStoreClient(
+        "vs_xxx",
+        client=mock,
+        attach_retry_delays_seconds=(0.1, 0.2),  # 2 retries → 3 attempts total
+        sleep=sleeps.append,
+    )
+    with pytest.raises(Exception, match="No file found"):
+        c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+    assert len(mock.vector_stores.files.create_and_poll_calls) == 3
+    assert sleeps == [0.1, 0.2]
+    # Orphan File cleaned up.
+    assert mock.files.delete_calls == ["file-000"]
+
+
+def test_upload_section_does_not_retry_non_matching_404(monkeypatch):
+    """A NotFoundError whose message doesn't match the eventual-consistency
+    pattern (e.g. "Vector store not found" — wrong vs_id) must NOT be
+    retried — that's a real configuration bug."""
+    NotFoundError = _install_openai_notfound_shim(monkeypatch)
+    mock = MockOpenAI()
+    mock.vector_stores.files.create_and_poll_side_effects = [
+        NotFoundError("Error code: 404 - Vector store not found")
+    ]
+    sleeps: list[float] = []
+    c = OpenAIVectorStoreClient(
+        "vs_xxx",
+        client=mock,
+        attach_retry_delays_seconds=(0.1, 0.2),
+        sleep=sleeps.append,
+    )
+    with pytest.raises(Exception, match="Vector store not found"):
+        c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+    assert len(mock.vector_stores.files.create_and_poll_calls) == 1
+    assert sleeps == []
+    # Orphan cleaned (current behavior — attach raised, we delete the File).
+    assert mock.files.delete_calls == ["file-000"]
+
+
+def test_upload_section_does_not_retry_non_notfound(monkeypatch):
+    """Random RuntimeError from attach is NOT a 404 → no retry, immediate
+    cleanup + propagate."""
+    _install_openai_notfound_shim(monkeypatch)
+    mock = MockOpenAI()
+    mock.vector_stores.files.create_and_poll_side_effects = [
+        RuntimeError("backend exploded")
+    ]
+    sleeps: list[float] = []
+    c = OpenAIVectorStoreClient(
+        "vs_xxx",
+        client=mock,
+        attach_retry_delays_seconds=(0.1, 0.2),
+        sleep=sleeps.append,
+    )
+    with pytest.raises(RuntimeError, match="backend exploded"):
+        c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+    assert sleeps == []
+    assert mock.files.delete_calls == ["file-000"]
+
+
+def test_upload_section_retry_uses_exponential_backoff_schedule(monkeypatch):
+    """The wait between retries follows the configured delay tuple in
+    order — not constant, not randomized."""
+    _install_openai_notfound_shim(monkeypatch)
+    mock = MockOpenAI()
+    err = _build_attach_404("file-000")
+    mock.vector_stores.files.create_and_poll_side_effects = [err, err, err, err]
+    mock.vector_stores.files.retrieve_raises = err
+    sleeps: list[float] = []
+    c = OpenAIVectorStoreClient(
+        "vs_xxx",
+        client=mock,
+        attach_retry_delays_seconds=(1.0, 2.0, 4.0),  # 3 retries → 4 attempts
+        sleep=sleeps.append,
+    )
+    with pytest.raises(Exception):
+        c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+    # 4 attempts (initial + 3 retries), 3 sleeps in the exact configured order.
+    assert len(mock.vector_stores.files.create_and_poll_calls) == 4
+    assert sleeps == [1.0, 2.0, 4.0]
