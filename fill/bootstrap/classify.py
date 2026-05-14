@@ -328,6 +328,10 @@ def _write_report(
     else:
         lines.append("No files defaulted to `paradigm` — sidebars.js covers every `.md` in docs/en "
                      "with a recognized category. No acceptance marker required.")
+        lines.append("")
+        # ALWAYS emit the machine-readable marker so check-bootstrap can read expected=0
+        # without ambiguity, on its own line per fill.manifest.MARKER_RE.
+        lines.append("BOOTSTRAP_DEFAULTS_REVIEWED: 0")
     lines.append("")
 
     lines.append("## Statistics")
