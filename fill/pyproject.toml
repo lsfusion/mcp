@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lsfusion-rag-fill"
+version = "0.1.0"
+description = "RAG indexer + bootstrap tooling for platform/docs/en"
+requires-python = ">=3.11"
+
+# Runtime deps are added per-step:
+#   - step 1 (this PR, bootstrap classify.py): no runtime deps; uses subprocess(node) for sidebars.js parsing
+#   - step 4 (chunker + ingest): langchain-text-splitters, python-frontmatter, openai==X.Y.Z, tiktoken
+#   - step 5 (eval): pytest fixtures + parametrize
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+# Package lives at the same directory as pyproject.toml (mcp/fill/), so map both `fill`
+# and `fill.bootstrap` explicitly. Standard `packages.find` with `where=["."]` would look
+# for `./fill/__init__.py` which doesn't exist (the package files are AT this level, not below).
+[tool.setuptools]
+packages = ["fill", "fill.bootstrap"]
+
+[tool.setuptools.package-dir]
+"fill" = "."
+"fill.bootstrap" = "bootstrap"
