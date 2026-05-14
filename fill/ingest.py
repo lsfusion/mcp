@@ -26,10 +26,17 @@ state still pointing at old, etc.) are caught by
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+
+# Default executor parallelism. Sized for OpenAI's `create_and_poll` profile
+# (each section spends ~8s waiting on indexing polls; 8 workers gets us close
+# to an 8x speedup before bumping into rate limits). Override via the
+# `max_workers` kwarg on `ingest_files`.
+DEFAULT_MAX_WORKERS = 8
 
 from fill.chunker import Section, SourceType, chunk_md
 from fill.openai_client import AttrValue, VectorStoreClient
@@ -62,6 +69,7 @@ def ingest_files(
     source_type_for: Callable[[Path], SourceType],
     slug_for: Callable[[Path], str],
     now: Callable[[], str] | None = None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> IngestStats:
     """Apply one ingest cycle. Mutates `state` in place.
 
@@ -77,13 +85,44 @@ def ingest_files(
         docs_root: filesystem root for `source_file` relative-path keys.
         source_type_for / slug_for: resolved from manifest by the caller.
         now: clock injection for tests; defaults to UTC `YYYY-MM-DDTHH:MM:SSZ`.
+        max_workers: ThreadPoolExecutor size for parallel upload/delete API
+            calls. State mutations are all routed through the main thread
+            via `as_completed`, so the only concurrent code path is the
+            VectorStoreClient I/O — which is what we want to parallelize
+            (OpenAI `create_and_poll` is mostly idle time on the poll loop).
     """
+    if max_workers < 1:
+        raise ValueError(f"max_workers must be >= 1, got {max_workers}")
     stats = IngestStats()
     current_versions = pipeline_versions()
     clock = now or _now_utc
 
-    _apply_removals(state, client, files_removed, stats)
+    # One executor for the whole run. `with` guarantees join even on errors.
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        _apply_removals(state, client, files_removed, stats, executor)
+        _process_files(
+            state, client, files_to_process, docs_root,
+            source_type_for, slug_for, clock, current_versions, stats, executor,
+        )
 
+    return stats
+
+
+def _process_files(
+    state: State,
+    client: VectorStoreClient,
+    files_to_process: list[Path],
+    docs_root: Path,
+    source_type_for: Callable[[Path], SourceType],
+    slug_for: Callable[[Path], str],
+    clock: Callable[[], str],
+    current_versions: dict[str, str],
+    stats: IngestStats,
+    executor: ThreadPoolExecutor,
+) -> None:
+    """Per-file loop. Files run sequentially (state mutations per file are
+    not partitioned by sid the same way upload/delete are); sections within
+    a single file's diff run in parallel through the shared executor."""
     for path in files_to_process:
         stats.files_seen += 1
         # Per-file setup is wrapped: a failing manifest lookup or path-mismatch
@@ -125,16 +164,14 @@ def ingest_files(
             client=client,
             source_file=source_file,
             source_type=source_type,
-            slug=slug,
             file_hash=file_hash,
             indexed_at=clock(),
             current_versions=current_versions,
             new_sections=new_sections,
             stats=stats,
+            executor=executor,
         )
         stats.files_processed += 1
-
-    return stats
 
 
 # ─── case B: removed files ─────────────────────────────────────────────────
@@ -145,25 +182,42 @@ def _apply_removals(
     client: VectorStoreClient,
     files_removed: list[str],
     stats: IngestStats,
+    executor: ThreadPoolExecutor,
 ) -> None:
+    # Parallel delete across (file, section) pairs of all removed files.
+    # All state mutation happens in the main thread after `as_completed`.
+    delete_jobs: list[tuple[str, str, str]] = []  # (source_file, sid, file_id)
     for source_file in files_removed:
         rec = state.files.get(source_file)
         if rec is None:
             continue
-        had_error = False
-        for sid in list(rec.sections.keys()):
-            srec = rec.sections[sid]
-            try:
-                client.delete_section(srec.file_id)
-                stats.sections_deleted += 1
-                # Drop from state only after the VS delete succeeds — order
-                # matters; a future refactor that moves the `del` above must
-                # be rejected.
-                del rec.sections[sid]
-            except Exception as e:
-                stats.errors.append(f"delete (removed file) {source_file}::{sid}: {e}")
-                had_error = True
-        if had_error:
+        for sid, srec in rec.sections.items():
+            delete_jobs.append((source_file, sid, srec.file_id))
+
+    futures: dict[Future, tuple[str, str, str]] = {}
+    for job in delete_jobs:
+        _src, _sid, fid = job
+        futures[executor.submit(client.delete_section, fid)] = job
+
+    had_error_per_file: dict[str, bool] = {}
+    for fut in as_completed(futures):
+        source_file, sid, fid = futures[fut]
+        try:
+            fut.result()
+            stats.sections_deleted += 1
+            # Drop from state only after the VS delete succeeds.
+            state.files[source_file].sections.pop(sid, None)
+        except Exception as e:
+            stats.errors.append(f"delete (removed file) {source_file}::{sid}: {e}")
+            had_error_per_file[source_file] = True
+
+    # Finalize per-file: keep the FileRecord stale if any of its sections
+    # failed to delete; otherwise remove the record entirely.
+    for source_file in files_removed:
+        rec = state.files.get(source_file)
+        if rec is None:
+            continue
+        if had_error_per_file.get(source_file):
             rec.stale = True
         else:
             remove_file(state, source_file)
@@ -179,12 +233,12 @@ def _apply_file_diff(
     client: VectorStoreClient,
     source_file: str,
     source_type: SourceType,
-    slug: str,
     file_hash: str,
     indexed_at: str,
     current_versions: dict[str, str],
     new_sections: list[Section],
     stats: IngestStats,
+    executor: ThreadPoolExecutor,
 ) -> None:
     new_by_id: dict[str, Section] = {s.section_id: s for s in new_sections}
     # `old_rec` is the existing FileRecord, or a throwaway empty one if this
@@ -195,25 +249,37 @@ def _apply_file_diff(
     old_sections = dict(old_rec.sections)
     had_error = False
 
-    # Replace or insert each new section.
+    # ─── phase 1: parallel upload of new/changed sections ─────────────────
+    upload_futures: dict[Future, tuple[str, Section, SectionRecord | None]] = {}
     for sid, sec in new_by_id.items():
         old = old_sections.get(sid)
         if old is not None and old.section_payload_hash == sec.section_payload_hash:
             continue  # unchanged
         attributes = _section_attributes(sec, source_file, file_hash)
-        filename = _filename_for(slug, sid)
+        filename = _filename_for(sid)
+        fut = executor.submit(
+            client.upload_section,
+            content=sec.payload,
+            filename=filename,
+            attributes=attributes,
+        )
+        upload_futures[fut] = (sid, sec, old)
+
+    # State mutation + queueing of the follow-up delete-old happens in the
+    # main thread as each upload completes. The old file_id only gets
+    # scheduled for deletion AFTER its replacement upload has succeeded —
+    # so an upload failure leaves the old file_id intact in the VS.
+    delete_old_futures: dict[Future, tuple[str, str]] = {}
+    for fut in as_completed(upload_futures):
+        sid, sec, old = upload_futures[fut]
         try:
-            new_fid = client.upload_section(
-                content=sec.payload, filename=filename, attributes=attributes
-            )
+            new_fid = fut.result()
             stats.sections_uploaded += 1
         except Exception as e:
             stats.errors.append(f"upload {source_file}::{sid}: {e}")
             had_error = True
             continue
 
-        # State now points at the new file_id; old becomes a reconcile orphan
-        # if the delete below fails.
         _ensure_file_record(state, source_file).sections[sid] = SectionRecord(
             file_id=new_fid,
             section_payload_hash=sec.section_payload_hash,
@@ -222,23 +288,35 @@ def _apply_file_diff(
         )
 
         if old is not None:
-            try:
-                client.delete_section(old.file_id)
-                stats.sections_deleted += 1
-            except Exception as e:
-                # Include old.file_id so an operator can clean it manually if
-                # reconcile hasn't yet run.
-                stats.errors.append(
-                    f"delete-old {source_file}::{sid} (orphan file_id={old.file_id}): {e}"
-                )
-                had_error = True
+            d = executor.submit(client.delete_section, old.file_id)
+            delete_old_futures[d] = (sid, old.file_id)
 
-    # Delete sections that disappeared from the new chunking. The set
-    # difference is computed against the pre-run snapshot above, not the
-    # mutated `state.files[source_file].sections`.
+    # ─── phase 2: parallel delete of replaced + disappeared sections ─────
+    # Disappeared = section_ids present in pre-run snapshot but absent
+    # from the new chunking. Snapshot reads, not live state, so the upload
+    # loop above can't shift the set.
+    disappeared_futures: dict[Future, str] = {}
     for sid in old_sections.keys() - new_by_id.keys():
+        d = executor.submit(client.delete_section, old_sections[sid].file_id)
+        disappeared_futures[d] = sid
+
+    # Wait on replaced-old deletes.
+    for fut in as_completed(delete_old_futures):
+        sid, old_fid = delete_old_futures[fut]
         try:
-            client.delete_section(old_sections[sid].file_id)
+            fut.result()
+            stats.sections_deleted += 1
+        except Exception as e:
+            stats.errors.append(
+                f"delete-old {source_file}::{sid} (orphan file_id={old_fid}): {e}"
+            )
+            had_error = True
+
+    # Wait on disappeared deletes.
+    for fut in as_completed(disappeared_futures):
+        sid = disappeared_futures[fut]
+        try:
+            fut.result()
             stats.sections_deleted += 1
             state.files[source_file].sections.pop(sid, None)
         except Exception as e:
@@ -276,10 +354,11 @@ def _ensure_file_record(state: State, source_file: str) -> FileRecord:
     return rec
 
 
-def _filename_for(slug: str, section_id: str) -> str:
-    # Avoid `::` in filenames — some filesystems and the OpenAI dashboard
-    # render double-colons awkwardly. Underscores round-trip cleanly.
-    return f"{slug}--{section_id.replace('::', '__')}.md"
+def _filename_for(section_id: str) -> str:
+    # section_id already starts with the slug (chunker emits
+    # `{slug}::{kebab}`), so the slug doesn't need a second appearance in
+    # the filename. `::` → `__` for filesystem / OpenAI dashboard friendliness.
+    return f"{section_id.replace('::', '__')}.md"
 
 
 def _section_attributes(

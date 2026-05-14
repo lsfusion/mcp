@@ -617,6 +617,107 @@ def test_setup_error_does_not_abort_run(docs):
     assert state.files[_src(p2, docs)].stale is False
 
 
+def test_parallel_upload_assigns_all_sections(docs):
+    """Many small files, max_workers=8 — every section must end up with a
+    unique file_id in state, and the count must match. No collisions, no
+    drops. Verifies the FakeVectorStoreClient lock + the as_completed
+    consumer pattern."""
+    # Build a fixture with enough sections to actually exercise the pool.
+    for i in range(20):
+        _write_md(
+            docs / f"DOC{i:02d}.md",
+            f"DOC{i:02d}",
+            "\n".join(f"## S{j}\n\nbody-{i}-{j}\n" for j in range(4)),
+        )
+    state = State()
+    client = FakeVectorStoreClient()
+    paths = sorted(docs.glob("*.md"))
+
+    stats = ingest_files(
+        state, client,
+        files_to_process=paths, files_removed=[],
+        docs_root=docs,
+        source_type_for=lambda _: "language",
+        slug_for=lambda p: p.stem,
+        now=_frozen_clock(),
+        max_workers=8,
+    )
+
+    assert stats.errors == []
+    assert stats.files_processed == 20
+    # Every section uploaded once, each got a unique file_id, and every
+    # file_id recorded in state exists in the fake VS.
+    expected_sections = 20 * 4  # one Section per `## S{j}` heading
+    assert stats.sections_uploaded == expected_sections
+    all_file_ids = {
+        srec.file_id
+        for rec in state.files.values()
+        for srec in rec.sections.values()
+    }
+    assert len(all_file_ids) == expected_sections
+    live = {vs.file_id for vs in client.list_sections()}
+    assert all_file_ids == live
+
+
+def test_max_workers_zero_raises(docs):
+    state = State()
+    client = FakeVectorStoreClient()
+    with pytest.raises(ValueError, match="max_workers"):
+        ingest_files(
+            state, client,
+            files_to_process=[], files_removed=[],
+            docs_root=docs,
+            source_type_for=lambda _: "language",
+            slug_for=lambda _: "x",
+            now=_frozen_clock(),
+            max_workers=0,
+        )
+
+
+def test_max_workers_one_is_serial_and_still_correct(docs):
+    """Single-worker mode disables parallelism but must still produce the
+    same state shape. Useful for debugging or rate-limited environments."""
+    p = docs / "AGGR.md"
+    _write_md(p, "AGGR", "## A\n\naaa\n\n## B\n\nbbb\n")
+    state = State()
+    client = FakeVectorStoreClient()
+    stats = ingest_files(
+        state, client,
+        files_to_process=[p], files_removed=[],
+        docs_root=docs,
+        source_type_for=lambda _: "language",
+        slug_for=lambda _: "AGGR",
+        now=_frozen_clock(),
+        max_workers=1,
+    )
+    assert stats.errors == []
+    assert stats.sections_uploaded == 2
+    assert len(state.files["AGGR.md"].sections) == 2
+
+
+def test_filename_drops_redundant_slug_prefix(docs):
+    """section_id already starts with slug, so the filename uses just
+    section_id (with `::` → `__`). Catches a regression where the slug
+    was prepended a second time, producing `AGGR--AGGR__syntax.md`."""
+    p = docs / "AGGR.md"
+    _write_md(p, "AGGR", "## Syntax\n\nfoo\n")
+    state = State()
+    client = FakeVectorStoreClient()
+    ingest_files(
+        state, client,
+        files_to_process=[p], files_removed=[],
+        docs_root=docs,
+        source_type_for=lambda _: "language",
+        slug_for=lambda _: "AGGR",
+        now=_frozen_clock(),
+    )
+    for call in client.upload_calls:
+        filename = call["filename"]
+        # Section ids look like "AGGR::syntax" → filename "AGGR__syntax.md".
+        assert "--" not in filename, f"unexpected `--` in {filename}"
+        assert filename.count("AGGR") == 1, f"slug duplicated: {filename}"
+
+
 def test_attributes_idempotent_across_unchanged_reuploads(docs):
     """Same content → same attributes byte-for-byte (no `indexed_at` field)."""
     p = docs / "AGGR.md"

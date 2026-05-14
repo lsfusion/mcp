@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Callable
 
 from fill.chunker import SourceType
-from fill.ingest import IngestStats, ingest_files
+from fill.ingest import DEFAULT_MAX_WORKERS, IngestStats, ingest_files
 from fill.openai_client import FakeVectorStoreClient, VectorStoreClient
 from fill.state import State, load, save
 from fill.versions import pipeline_versions
@@ -160,11 +160,20 @@ def main(argv: list[str] | None = None) -> int:
             client=client,
             git=git,
             vector_store_id_override=override_for_run,
+            max_workers=args.max_workers,
         )
     except (ValueError, OSError, subprocess.CalledProcessError) as e:
         log.error("setup failure during run: %s", e)
         return EXIT_SETUP_ERROR
     return exit_code
+
+
+def _positive_int(s: str) -> int:
+    """argparse type: parse a positive integer; raise on 0 or negative."""
+    n = int(s)
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {n}")
+    return n
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -181,6 +190,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                    help="OpenAI VS create_and_poll interval (default 1000ms)")
     p.add_argument("--file-purpose", default="assistants",
                    help='OpenAI Files API "purpose" (default: assistants)')
+    p.add_argument("--max-workers", type=_positive_int, default=DEFAULT_MAX_WORKERS,
+                   help=f"Parallel section upload/delete pool size "
+                        f"(default {DEFAULT_MAX_WORKERS}). Each section upload spends "
+                        f"most of its time polling for indexing; the default gets "
+                        f"close to Nx speedup before OpenAI rate limits kick in. "
+                        f"Set to 1 to debug serially.")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -207,6 +222,7 @@ def run(
     client: VectorStoreClient,
     git: GitRunner,
     vector_store_id_override: str | None = None,
+    max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> tuple[int, IngestStats]:
     """Run one ingest cycle. Returns (exit_code, stats)."""
     docs_root = platform_root / DOCS_SUBDIR
@@ -277,6 +293,7 @@ def run(
         docs_root=docs_root,
         source_type_for=source_type_for,
         slug_for=slug_for,
+        max_workers=max_workers,
     )
     _log_stats(stats)
 

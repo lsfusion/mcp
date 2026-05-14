@@ -12,6 +12,7 @@ match OpenAI's Vector Store file-attribute API.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -70,6 +71,13 @@ class FakeVectorStoreClient:
     def __init__(self) -> None:
         self._files: dict[str, tuple[str, dict[str, AttrValue]]] = {}
         self._next_id = 0
+        # The lock guards ALL state in this fake (`_files`, `_next_id`,
+        # `upload_calls`, `delete_calls`) so it stays safe under
+        # ThreadPoolExecutor-driven parallel uploads from the driver.
+        # `fail_*` sets and assertions on `upload_calls`/`delete_calls`
+        # outside the methods rely on tests not racing — which they don't,
+        # since pytest is single-threaded by default.
+        self._lock = threading.Lock()
         self.fail_upload_for_section_id: set[str] = set()
         self.fail_delete_for_file_id: set[str] = set()
         self.upload_calls: list[dict[str, object]] = []
@@ -85,26 +93,32 @@ class FakeVectorStoreClient:
         sid = str(attributes.get("section_id", ""))
         if sid and sid in self.fail_upload_for_section_id:
             raise RuntimeError(f"simulated upload failure for section_id={sid}")
-        file_id = f"fake-file-{self._next_id}"
-        self._next_id += 1
-        self._files[file_id] = (content, dict(attributes))
-        self.upload_calls.append(
-            {"file_id": file_id, "filename": filename, "attributes": dict(attributes)}
-        )
+        with self._lock:
+            file_id = f"fake-file-{self._next_id}"
+            self._next_id += 1
+            self._files[file_id] = (content, dict(attributes))
+            self.upload_calls.append(
+                {"file_id": file_id, "filename": filename, "attributes": dict(attributes)}
+            )
         return file_id
 
     def delete_section(self, file_id: str) -> None:
         if file_id in self.fail_delete_for_file_id:
             raise RuntimeError(f"simulated delete failure for file_id={file_id}")
-        if file_id not in self._files:
-            raise KeyError(f"unknown file_id {file_id!r}")
-        del self._files[file_id]
-        self.delete_calls.append(file_id)
+        with self._lock:
+            if file_id not in self._files:
+                raise KeyError(f"unknown file_id {file_id!r}")
+            del self._files[file_id]
+            self.delete_calls.append(file_id)
 
     def list_sections(self) -> list[VectorStoreSection]:
+        # Snapshot under the lock so a concurrent upload/delete can't trip
+        # "dictionary changed size during iteration" in CPython.
+        with self._lock:
+            items = list(self._files.items())
         return [
             VectorStoreSection(file_id=fid, attributes=dict(attrs))
-            for fid, (_, attrs) in self._files.items()
+            for fid, (_, attrs) in items
         ]
 
     # ─── test helpers ──────────────────────────────────────────────────────
@@ -123,4 +137,5 @@ class FakeVectorStoreClient:
         """Inject a VS entry with a chosen file_id, bypassing the upload log.
         For tests that reason about VS state (e.g. fill.reconcile) rather
         than how it got there."""
-        self._files[file_id] = (content, dict(attributes))
+        with self._lock:
+            self._files[file_id] = (content, dict(attributes))
