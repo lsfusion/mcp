@@ -9,10 +9,7 @@ Transports:
 
 ## Core Tools
 - `lsfusion_get_guidance()`: Fetch mandatory brief and rules.
-- `lsfusion_retrieve_docs(query: string)`: Official documentation search.
-- `lsfusion_retrieve_howtos(query: string)`: How-tos and combined scenarios.
-- `lsfusion_retrieve_community(query: string)`: Tutorials and community discussions.
-- `lsfusion_validate_syntax(text: string)`: Syntax validation for lsFusion statements.
+- `lsfusion_retrieve_docs(query: string, type?: "language" | "paradigm")`: Official documentation search (language + paradigm sourceTypes from the OpenAI Vector Store; English content only).
 
 ## Quickstart (local)
 
@@ -20,7 +17,7 @@ Transports:
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-export OPENAI_API_KEY=sk-...        PINECONE_API_KEY=...        PINECONE_INDEX=lsfusion        PINECONE_NAMESPACE=""
+export OPENAI_API_KEY=sk-... RAG_VECTOR_STORE_ID=vs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 # STDIO transport
 python server.py stdio
@@ -39,24 +36,22 @@ mcp dev server.py
 Create a new module under `tools/` and register it with `@mcp.tool()` in `server.py` (or build an auto-discovery
 if you prefer). Keep tool signatures simple and JSON-serializable.
 
-## Contract / output for `lsfusion_retrieve_*`
+## Contract / output for `lsfusion_retrieve_docs`
 Returns an array of objects:
 ```json
 {
   "docs": [
-    { "source": "documentation-how-to", "text": "....", "score": 0.73 },
-    { "source": "articles", "text": "....", "score": 0.69 }
+    { "source": "documentation-language", "text": "....", "score": 0.73 },
+    { "source": "documentation-paradigm", "text": "....", "score": 0.69 }
   ]
 }
 ```
 Sorted by `score` descending. Structured output is enabled.
 
 ## Environment variables
-- `OPENAI_API_KEY` — OpenAI API key
-- `PINECONE_API_KEY` — Pinecone API key
-- `PINECONE_INDEX` — Pinecone index name (default `lsfusion`)
-- `PINECONE_NAMESPACE` — Pinecone namespace (default empty)
-- `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`)
+- `OPENAI_API_KEY` — OpenAI API key (required).
+- `RAG_VECTOR_STORE_ID` — OpenAI Vector Store id that `lsfusion_retrieve_docs` searches against (required). Must match the store populated by the `ragIngestDocs` Jenkins pipeline.
+- `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`).
 
 ## Docker
 
@@ -65,7 +60,7 @@ Build and run:
 docker build -t lsfusion/mcp:latest .
 docker run --rm -p 8000:8000 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  -e PINECONE_API_KEY=$PINECONE_API_KEY \
+  -e RAG_VECTOR_STORE_ID=$RAG_VECTOR_STORE_ID \
   lsfusion/mcp:latest
 ```
 
@@ -84,8 +79,8 @@ docker compose up --build
      env:
        - name: OPENAI_API_KEY
          valueFrom: { secretKeyRef: { name: mcp-secrets, key: openai } }
-       - name: PINECONE_API_KEY
-         valueFrom: { secretKeyRef: { name: mcp-secrets, key: pinecone } }
+       - name: RAG_VECTOR_STORE_ID
+         valueFrom: { configMapKeyRef: { name: mcp-config, key: rag_vector_store_id } }
      ```
 
 2. **Docker Swarm / Compose secrets**  
@@ -94,15 +89,15 @@ docker compose up --build
      services:
        mcp:
          image: lsfusion/mcp:latest
-         secrets: [openai_key, pinecone_key]
+         secrets: [openai_key]
+         environment:
+           - RAG_VECTOR_STORE_ID
      secrets:
        openai_key: { file: ./secrets/openai_key.txt }
-       pinecone_key: { file: ./secrets/pinecone_key.txt }
      ```
    - Read them in an entrypoint script:
      ```bash
      export OPENAI_API_KEY="$(cat /run/secrets/openai_key)"
-     export PINECONE_API_KEY="$(cat /run/secrets/pinecone_key)"
      exec python server.py http --host 0.0.0.0 --port 8000
      ```
 
@@ -133,12 +128,12 @@ Examples:
 
 **Local run**
 ```bash
-export OPENAI_API_KEY=sk-... PINECONE_API_KEY=...
+export OPENAI_API_KEY=sk-... RAG_VECTOR_STORE_ID=vs_xxxx
 export MCP_HOST=0.0.0.0 MCP_PORT=8000
 python server.py http
 ```
 
 **Docker**
 ```bash
-docker run --rm -p 8000:8000 \  -e OPENAI_API_KEY=$OPENAI_API_KEY \  -e PINECONE_API_KEY=$PINECONE_API_KEY \  -e MCP_HOST=0.0.0.0 \  -e MCP_PORT=8000 \  ghcr.io/<org>/<repo>/lsfusion-mcp:latest
+docker run --rm -p 8000:8000 \  -e OPENAI_API_KEY=$OPENAI_API_KEY \  -e RAG_VECTOR_STORE_ID=$RAG_VECTOR_STORE_ID \  -e MCP_HOST=0.0.0.0 \  -e MCP_PORT=8000 \  ghcr.io/<org>/<repo>/lsfusion-mcp:latest
 ```

@@ -1,36 +1,25 @@
 from __future__ import annotations
-from typing import List, Iterable
+from typing import List
 from pydantic import BaseModel, Field
 
 from openai import OpenAI
-from pinecone import Pinecone
 
 from settings import (
     OPENAI_API_KEY,
     RAG_VECTOR_STORE_ID,
-    PINECONE_API_KEY,
-    PINECONE_INDEX,
-    PINECONE_NAMESPACE,
-    EMBEDDING_MODEL,
     SOURCETYPE_DOCUMENTATION,
     SOURCETYPE_DOCUMENTATION_PARADIGM,
     SOURCETYPE_DOCUMENTATION_LANGUAGE,
     SOURCETYPE_DOC_PARADIGM,
     SOURCETYPE_DOC_LANGUAGE,
-    SOURCETYPE_DOC_HOWTO,
-    SOURCETYPE_DOC_TUTORIAL,
-    SOURCETYPE_ARTICLES,
-    SOURCETYPE_TALKS,
-    SOURCETYPE_SAMPLES,
-    TEXT,
     SOURCETYPE,
     TOP_K,
 )
 
-# ====== Pydantic models ======
+
 class DocItem(BaseModel):
     """Single retrieved chunk from the RAG knowledge base."""
-    source: str = Field(..., description="Chunk origin (e.g. docs, howto, tutorial).")
+    source: str = Field(..., description="Chunk origin (e.g. documentation-language, documentation-paradigm).")
     text: str = Field(..., description="Retrieved text snippet.")
     score: float = Field(..., description="Similarity score (higher = more relevant).")
 
@@ -43,87 +32,16 @@ class RetrieveDocsOutput(BaseModel):
     )
 
 
-# ====== Initialization ======
 client = OpenAI(api_key=OPENAI_API_KEY)
-pc = Pinecone(api_key=PINECONE_API_KEY)
-index = pc.Index(PINECONE_INDEX)
-
-
-def _chunk_by_words(text: str, max_words: int = 3000) -> List[str]:
-    """
-    Split text into space-delimited chunks with up to `max_words` words.
-    Used to keep embedding requests within model limits.
-    """
-    words = text.split()
-    if len(words) <= max_words:
-        return [text]
-    return [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
-
-
-def _get_embedding(text: str) -> List[float]:
-    """
-    Generate an averaged embedding vector for the given text.
-    Each chunk is L2-normalized before averaging.
-    """
-    chunks = _chunk_by_words(text, 3000)
-    resp = client.embeddings.create(model=EMBEDDING_MODEL, input=chunks)
-
-    # Single chunk: return as-is
-    if len(resp.data) == 1:
-        return list(resp.data[0].embedding)
-
-    # Average across normalized chunk embeddings
-    dim = len(resp.data[0].embedding)
-    acc = [0.0] * dim
-    for datum in resp.data:
-        vec = list(datum.embedding)
-        norm = (sum(v * v for v in vec) ** 0.5) or 1.0
-        for i in range(dim):
-            acc[i] += vec[i] / norm
-
-    n = len(resp.data)
-    return [v / n for v in acc]
-
-
-def _query_index_for_source(query: str, source_types: Iterable[str]) -> List[DocItem]:
-    """
-    Query Pinecone for the given set of source types and return the corresponding DocItem list.
-    """
-    vec = _get_embedding(query)
-    items: List[DocItem] = []
-
-    for source_type in source_types:
-        top_k = TOP_K.get(source_type, 0)
-        if top_k <= 0:
-            continue
-
-        res = index.query(
-            vector=vec,
-            top_k=top_k,
-            include_metadata=True,
-            namespace=PINECONE_NAMESPACE or None,
-            filter={SOURCETYPE: {"$eq": source_type}},
-        )
-
-        for match in (res.matches or []):
-            meta = match.metadata or {}
-            items.append(DocItem(
-                source=source_type,
-                text=meta.get(TEXT, "") or "",
-                score=float(match.score or 0.0),
-            ))
-
-    # Sort results by descending score
-    items.sort(key=lambda d: -d.score)
-    return items
 
 
 def _vs_search_for_source(query: str, source_type: str, top_k: int) -> List[DocItem]:
-    """
-    Query the OpenAI Vector Store for chunks tagged with the given `sourceType`
-    attribute. `source_type` is the bare manifest value ("language" / "paradigm"),
-    while the returned DocItem.source uses the combined "documentation-<type>"
-    form to keep the output shape compatible with the Pinecone-era callers.
+    """Search the OpenAI Vector Store for chunks tagged with `sourceType=source_type`.
+
+    `source_type` is the bare manifest value ("language" / "paradigm"). The
+    returned `DocItem.source` uses the combined "documentation-<type>" form
+    so the output shape matches what legacy consumers (platform `RAGRetrieve`,
+    plugin) expect.
     """
     if top_k <= 0:
         return []
@@ -146,25 +64,39 @@ def _vs_search_for_source(query: str, source_type: str, top_k: int) -> List[DocI
     return items
 
 
-def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
-    """Retrieve paradigm + language chunks from the OpenAI Vector Store
-    populated by the ragIngestDocs Jenkins pipeline. Each `sourceType` is
-    searched independently (mirroring the per-type TOP_K budget from the
-    previous Pinecone implementation) and the merged results are returned
-    sorted by descending score."""
+ALLOWED_TYPES = (
+    SOURCETYPE_DOCUMENTATION_LANGUAGE,
+    SOURCETYPE_DOCUMENTATION_PARADIGM,
+)
+
+# `type` argument → (bare sourceType filter, TOP_K key)
+_TYPE_TO_TOP_K = {
+    SOURCETYPE_DOCUMENTATION_LANGUAGE: SOURCETYPE_DOC_LANGUAGE,
+    SOURCETYPE_DOCUMENTATION_PARADIGM: SOURCETYPE_DOC_PARADIGM,
+}
+
+
+def retrieve_docs_tool(query: str, type: str | None = None) -> RetrieveDocsOutput:
+    """Retrieve chunks from the OpenAI Vector Store populated by the
+    `ragIngestDocs` Jenkins pipeline.
+
+    `type` filters by chunk sourceType:
+      * omitted / null — search both `language` and `paradigm`, merge results.
+      * `"language"` — only language reference chunks.
+      * `"paradigm"` — only paradigm / conceptual chunks.
+
+    The store only holds English (`docs/en/`) content. Cross-lingual
+    embeddings make non-English queries work, but English wording is
+    preferred for best recall.
+    """
+    if type is not None and type not in ALLOWED_TYPES:
+        raise ValueError(
+            f"type must be one of {ALLOWED_TYPES} or null/omitted, got {type!r}"
+        )
+    requested = (type,) if type else ALLOWED_TYPES
     items: List[DocItem] = []
-    items.extend(_vs_search_for_source(
-        query, SOURCETYPE_DOCUMENTATION_LANGUAGE, TOP_K.get(SOURCETYPE_DOC_LANGUAGE, 0)))
-    items.extend(_vs_search_for_source(
-        query, SOURCETYPE_DOCUMENTATION_PARADIGM, TOP_K.get(SOURCETYPE_DOC_PARADIGM, 0)))
+    for source_type in requested:
+        items.extend(_vs_search_for_source(
+            query, source_type, TOP_K.get(_TYPE_TO_TOP_K[source_type], 0)))
     items.sort(key=lambda d: -d.score)
     return RetrieveDocsOutput(docs=items)
-
-def retrieve_samples_tool(query: str) -> RetrieveDocsOutput:
-    items = _query_index_for_source(query, [SOURCETYPE_SAMPLES, SOURCETYPE_DOC_HOWTO])
-    return RetrieveDocsOutput(docs=items)
-
-def retrieve_learning_tool(query: str) -> RetrieveDocsOutput:
-    items = _query_index_for_source(query, [SOURCETYPE_DOC_TUTORIAL, SOURCETYPE_ARTICLES, SOURCETYPE_TALKS])
-    return RetrieveDocsOutput(docs=items)
-
