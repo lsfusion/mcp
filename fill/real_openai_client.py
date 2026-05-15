@@ -44,6 +44,14 @@ log = logging.getLogger(__name__)
 _TERMINAL_OK = "completed"
 _TERMINAL_FAILED = frozenset({"failed", "cancelled"})
 
+# OpenAI `last_error.code` values that indicate a transient server-side
+# fault — not content rejection. In production we've seen `server_error`
+# arrive as `status='failed'`, only for OpenAI to silently mark the same
+# file_id `completed` minutes later in the VS dashboard. Retry-via-probe
+# is the right response. Content-related codes (e.g. file_too_large,
+# invalid_content_type) must NOT retry.
+_TRANSIENT_FAILURE_CODES = frozenset({"server_error", "internal_error"})
+
 # Backoff schedule for retrying transient `create_and_poll` 404s caused by
 # Files-API / Vector-Store read-after-write inconsistency on OpenAI's side.
 # Observed in production (build #3, 2026-05-14): 478 consecutive attach
@@ -127,6 +135,16 @@ class OpenAIVectorStoreClient:
             self._best_effort_files_delete(file_id)
             raise
 
+        # Transient `failed` with `server_error` — observed in production
+        # cascades (build #8/#9). The file is already attached; only a
+        # retrieve-only probe can recover. `cancelled` is intentional and
+        # out-of-band — never retry.
+        if (
+            getattr(vsf, "status", None) == "failed"
+            and self._is_retryable_status_failed(vsf)
+        ):
+            vsf = self._wait_for_completed_after_transient_failure(file_id, vsf)
+
         status = getattr(vsf, "status", None)
         if status == _TERMINAL_OK:
             return file_id
@@ -202,10 +220,21 @@ class OpenAIVectorStoreClient:
         file_id: str,
         attributes: dict[str, AttrValue],
     ) -> Any:
-        """Call `vector_stores.files.create_and_poll`, with retry only for
-        the OpenAI-side eventual-consistency 404 pattern observed in
-        production. All other exceptions propagate immediately to the
-        upload_section orphan-cleanup path."""
+        """Call `vector_stores.files.create_and_poll`, retrying ONLY the
+        transient 404 "No file found with id X in vector store Y" error
+        — the read-after-write inconsistency between Files.create and
+        the VS attach endpoint.
+
+        Other exceptions propagate. Returns whatever vsf the call
+        ultimately produced (caller inspects status).
+
+        `status='failed' server_error` (the second cascade mode) is
+        handled by a DIFFERENT loop, `_wait_for_completed_after_transient_failure`,
+        because re-issuing `create_and_poll` on a file_id that's already
+        attached to the VS would either be a no-op or fail with a
+        duplicate-attach error. A probe via `retrieve` is the only safe
+        recovery mechanism once the file is in the VS.
+        """
         delays = self._attach_retry_delays_seconds
         attempts = len(delays) + 1
 
@@ -220,30 +249,54 @@ class OpenAIVectorStoreClient:
             except Exception as e:
                 if not self._is_retryable_attach_not_found(e, file_id):
                     raise
-
                 if attempt == attempts - 1:
                     raise
 
                 delay = delays[attempt]
                 log.warning(
-                    "VS attach/poll saw transient 404 for file_id=%s "
-                    "(attempt %d/%d); retrying in %.1fs",
+                    "VS attach for file_id=%s saw transient 404 (attempt %d/%d); "
+                    "sleeping %.1fs",
                     file_id, attempt + 1, attempts, delay,
                 )
                 self._sleep(delay)
-
-                # After the wait, try retrieve once before the next
-                # create_and_poll — saves an attach call if VS already has
-                # the file. If the file is terminally-failed in the VS,
-                # this raises (no point retrying) and `upload_section`'s
-                # except path will run orphan cleanup.
+                # If the file already made it in despite the 404, surface it
+                # immediately and skip the next attach.
                 recovered = self._try_retrieve_vs_file(file_id)
                 if recovered is not None:
                     return recovered
 
-        # Unreachable: the loop always either returns or raises on the
-        # final attempt above.
         raise AssertionError("unreachable: retry loop exited without resolution")
+
+    def _wait_for_completed_after_transient_failure(
+        self, file_id: str, initial_vsf: Any,
+    ) -> Any:
+        """Poll `vector_stores.files.retrieve` until either the file
+        reaches `status='completed'` (recovery) or the budget is
+        exhausted (return the last observed vsf, caller raises).
+
+        Does NOT re-issue `create_and_poll`: by the time we get here, the
+        file is already attached to the VS (even though the first poll
+        reported failed). Issuing attach again would either be a no-op
+        or fail as a duplicate attach.
+
+        Production observation (build #9): 30 sections reported
+        `status='failed' server_error` from create_and_poll; the VS
+        dashboard showed them all `completed` minutes later. The
+        retrieve-only loop is the right shape for that pattern.
+        """
+        delays = self._attach_retry_delays_seconds
+        last_vsf = initial_vsf
+        for i, delay in enumerate(delays):
+            log.warning(
+                "VS attach for file_id=%s saw transient status='failed'/server_error "
+                "(probe %d/%d); sleeping %.1fs before retrieve",
+                file_id, i + 1, len(delays), delay,
+            )
+            self._sleep(delay)
+            recovered = self._try_retrieve_vs_file(file_id)
+            if recovered is not None:
+                return recovered
+        return last_vsf
 
     def _is_retryable_attach_not_found(self, e: Exception, file_id: str) -> bool:
         """Match OpenAI's "No file found with id X in vector store" 404 —
@@ -281,15 +334,11 @@ class OpenAIVectorStoreClient:
         return matched
 
     def _try_retrieve_vs_file(self, file_id: str) -> Any | None:
-        """Direct `retrieve` on the VS file. Returns the file object if it
-        is already `completed` in the VS (attach DID succeed despite the
-        create_and_poll exception). Returns None if the file is unknown
-        or still in-progress — caller continues the retry loop.
-
-        Raises `RuntimeError` if the file is terminally-failed (status in
-        `{failed, cancelled}`) — retrying create_and_poll wouldn't help,
-        and we want the orphan-cleanup path in `upload_section` to run
-        instead of accumulating dead VS rows."""
+        """Soft probe of the VS for `file_id`. Returns the vsf only when
+        `status == 'completed'` — the only signal that meaningfully
+        short-circuits a retry loop. All other statuses (in_progress,
+        failed, cancelled, missing) and errors return None so the caller
+        keeps its retry budget intact."""
         try:
             vsf = self._client.vector_stores.files.retrieve(
                 vector_store_id=self._vs_id,
@@ -297,19 +346,28 @@ class OpenAIVectorStoreClient:
             )
         except Exception:  # noqa: BLE001 — best-effort probe
             return None
-        status = getattr(vsf, "status", None)
-        if status == _TERMINAL_OK:
+        if getattr(vsf, "status", None) == _TERMINAL_OK:
             return vsf
-        if status in _TERMINAL_FAILED:
-            last_error = getattr(vsf, "last_error", None)
-            # Surface via RuntimeError so the upload_section's except path
-            # picks it up (orphan File cleanup + propagation). Not a
-            # retryable-404, so the next iteration would not have helped.
-            raise RuntimeError(
-                f"VS attach for file_id={file_id} ended with status={status!r}, "
-                f"last_error={last_error!r} (observed via retry-time retrieve)"
-            )
         return None
+
+    def _is_retryable_status_failed(self, vsf: Any) -> bool:
+        """Match a transient `status='failed'` (e.g. OpenAI internal
+        indexing error) vs a permanent content-rejection failure.
+
+        We've seen `last_error.code='server_error'` revert to `completed`
+        on a later `retrieve`. Content-related codes never recover and
+        must NOT retry."""
+        last_error = getattr(vsf, "last_error", None)
+        if last_error is None:
+            return False
+        # `last_error` may be a SDK pydantic model OR a plain dict
+        # depending on the SDK version. Probe both shapes.
+        code = (
+            getattr(last_error, "code", None)
+            if not isinstance(last_error, dict)
+            else last_error.get("code")
+        )
+        return code in _TRANSIENT_FAILURE_CODES
 
     def _best_effort_files_delete(self, file_id: str) -> None:
         try:
