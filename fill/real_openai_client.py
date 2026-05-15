@@ -338,13 +338,19 @@ class OpenAIVectorStoreClient:
         `status == 'completed'` — the only signal that meaningfully
         short-circuits a retry loop. All other statuses (in_progress,
         failed, cancelled, missing) and errors return None so the caller
-        keeps its retry budget intact."""
+        keeps its retry budget intact.
+
+        Probe errors are logged at DEBUG so a repeating auth/permission/
+        rate-limit failure leaves a trail without contaminating WARN
+        output of the surrounding retry logic.
+        """
         try:
             vsf = self._client.vector_stores.files.retrieve(
                 vector_store_id=self._vs_id,
                 file_id=file_id,
             )
-        except Exception:  # noqa: BLE001 — best-effort probe
+        except Exception as e:  # noqa: BLE001 — best-effort probe
+            log.debug("retrieve probe for file_id=%s failed (swallowed): %s", file_id, e)
             return None
         if getattr(vsf, "status", None) == _TERMINAL_OK:
             return vsf
