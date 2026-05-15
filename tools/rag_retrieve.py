@@ -7,10 +7,14 @@ from pinecone import Pinecone
 
 from settings import (
     OPENAI_API_KEY,
+    RAG_VECTOR_STORE_ID,
     PINECONE_API_KEY,
     PINECONE_INDEX,
     PINECONE_NAMESPACE,
     EMBEDDING_MODEL,
+    SOURCETYPE_DOCUMENTATION,
+    SOURCETYPE_DOCUMENTATION_PARADIGM,
+    SOURCETYPE_DOCUMENTATION_LANGUAGE,
     SOURCETYPE_DOC_PARADIGM,
     SOURCETYPE_DOC_LANGUAGE,
     SOURCETYPE_DOC_HOWTO,
@@ -114,8 +118,46 @@ def _query_index_for_source(query: str, source_types: Iterable[str]) -> List[Doc
     return items
 
 
+def _vs_search_for_source(query: str, source_type: str, top_k: int) -> List[DocItem]:
+    """
+    Query the OpenAI Vector Store for chunks tagged with the given `sourceType`
+    attribute. `source_type` is the bare manifest value ("language" / "paradigm"),
+    while the returned DocItem.source uses the combined "documentation-<type>"
+    form to keep the output shape compatible with the Pinecone-era callers.
+    """
+    if top_k <= 0:
+        return []
+    resp = client.vector_stores.search(
+        vector_store_id=RAG_VECTOR_STORE_ID,
+        query=query,
+        max_num_results=top_k,
+        filters={"type": "eq", "key": SOURCETYPE, "value": source_type},
+        rewrite_query=False,
+    )
+    combined = f"{SOURCETYPE_DOCUMENTATION}-{source_type}"
+    items: List[DocItem] = []
+    for hit in resp.data:
+        text_parts = [c.text for c in (hit.content or []) if getattr(c, "type", None) == "text"]
+        items.append(DocItem(
+            source=combined,
+            text="\n".join(text_parts),
+            score=float(hit.score or 0.0),
+        ))
+    return items
+
+
 def retrieve_docs_tool(query: str) -> RetrieveDocsOutput:
-    items = _query_index_for_source(query, [SOURCETYPE_DOC_PARADIGM, SOURCETYPE_DOC_LANGUAGE])
+    """Retrieve paradigm + language chunks from the OpenAI Vector Store
+    populated by the ragIngestDocs Jenkins pipeline. Each `sourceType` is
+    searched independently (mirroring the per-type TOP_K budget from the
+    previous Pinecone implementation) and the merged results are returned
+    sorted by descending score."""
+    items: List[DocItem] = []
+    items.extend(_vs_search_for_source(
+        query, SOURCETYPE_DOCUMENTATION_LANGUAGE, TOP_K.get(SOURCETYPE_DOC_LANGUAGE, 0)))
+    items.extend(_vs_search_for_source(
+        query, SOURCETYPE_DOCUMENTATION_PARADIGM, TOP_K.get(SOURCETYPE_DOC_PARADIGM, 0)))
+    items.sort(key=lambda d: -d.score)
     return RetrieveDocsOutput(docs=items)
 
 def retrieve_samples_tool(query: str) -> RetrieveDocsOutput:

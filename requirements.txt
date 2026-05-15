@@ -1,6 +1,6 @@
 mcp[cli]>=1.6.0,<2.0.0
 fastmcp>=2.0.0,<3.0.0
-openai>=1.40.0
+openai>=1.50.0  # vector_stores.search (retrieve_docs_tool)
 pinecone>=7.0.0
 antlr4-python3-runtime>=4.13,<4.14
 

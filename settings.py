@@ -3,6 +3,7 @@ import os
 
 # === Environment variables ===
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+RAG_VECTOR_STORE_ID = os.environ.get("RAG_VECTOR_STORE_ID", "")
 PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY", "")
 PINECONE_INDEX = os.environ.get("PINECONE_INDEX", "lsfusion")
 PINECONE_NAMESPACE = os.environ.get("PINECONE_NAMESPACE", "")
