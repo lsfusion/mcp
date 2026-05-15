@@ -608,6 +608,78 @@ def test_git_diff_call_uses_correct_base_and_subdir(tmp_path):
     assert git.changed_calls == [("commit-base", "commit-new", "docs/en")]
 
 
+def test_no_op_ingest_does_not_advance_last_commit(tmp_path):
+    """Critical: a fast-path-only ingest (nothing uploaded/deleted/removed)
+    MUST NOT update `last_indexed_docs_commit`. Stamping it would change
+    state.json, the Jenkins wrapper would commit that change, and the
+    commit would itself trigger another webhook → infinite loop (observed
+    in production after build #10 — 313 builds in 90 min)."""
+    root = _platform_root(
+        tmp_path,
+        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
+        manifest={"AGGR": {"sourceType": "language"}},
+    )
+    # Establish baseline so state has a stamped last_commit.
+    run(platform_root=root, client=FakeVectorStoreClient(),
+        git=FakeGitRunner(head="commit-A"), vector_store_id_override="vs_x")
+    state_after_baseline = load(root / ".rag" / "openai-state.json")
+    assert state_after_baseline.last_indexed_docs_commit == "commit-A"
+
+    # Re-run with a NEW head but the docs unchanged — all files fast-path skip.
+    code, stats = run(
+        platform_root=root, client=FakeVectorStoreClient(),
+        git=FakeGitRunner(head="commit-B"),
+    )
+    assert code == EXIT_OK
+    # No real work: all uploads/deletes/removals zero.
+    assert stats.sections_uploaded == 0
+    assert stats.sections_deleted == 0
+    assert stats.files_removed == 0
+
+    # last_commit NOT advanced — stays at "commit-A" even though current
+    # head is "commit-B". This keeps state.json byte-identical so the
+    # Jenkins wrapper's git-diff check skips the commit.
+    state_after_noop = load(root / ".rag" / "openai-state.json")
+    assert state_after_noop.last_indexed_docs_commit == "commit-A"
+
+
+def test_no_op_ingest_stamps_pipeline_versions(tmp_path):
+    """Companion to the previous test: while `last_indexed_docs_commit`
+    must NOT advance on no-op runs (to break the webhook loop),
+    `pipeline_versions` MUST advance on clean runs — otherwise a version
+    bump that happens to leave every section_payload_hash unchanged would
+    leave the sentinel as `None`, forcing forced-full-scan on every
+    future ingest."""
+    root = _platform_root(
+        tmp_path,
+        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
+        manifest={"AGGR": {"sourceType": "language"}},
+    )
+    # Baseline.
+    run(platform_root=root, client=FakeVectorStoreClient(),
+        git=FakeGitRunner(head="commit-A"), vector_store_id_override="vs_x")
+
+    # Hand-set pipeline_versions to None (simulate fresh sentinel after
+    # version drift) and re-run with no changes.
+    from fill.state import save as save_state
+    state = load(root / ".rag" / "openai-state.json")
+    state.pipeline_versions = None
+    save_state(root / ".rag" / "openai-state.json", state)
+
+    code, stats = run(
+        platform_root=root, client=FakeVectorStoreClient(),
+        git=FakeGitRunner(head="commit-B"),
+    )
+    assert code == EXIT_OK
+    assert stats.sections_uploaded == 0  # no real work
+
+    state_after = load(root / ".rag" / "openai-state.json")
+    # `pipeline_versions` IS stamped (otherwise forever-forced-full-scan).
+    assert state_after.pipeline_versions is not None
+    # `last_indexed_docs_commit` is NOT advanced.
+    assert state_after.last_indexed_docs_commit == "commit-A"
+
+
 def test_stale_but_missing_entry_remains_in_state(tmp_path):
     """A stale entry whose file no longer exists doesn't trigger an error
     but also isn't auto-removed; reconcile or a later git-diff handles it."""

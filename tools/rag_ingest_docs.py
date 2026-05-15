@@ -10,9 +10,18 @@ Responsibilities:
         UNION with `state.stale_files()` for the changed-files set.
   - Resolve sourceType/slug for each file via `docs/manifest.json`.
   - Run `fill.ingest.ingest_files`.
-  - Step ∞: ONLY when there are no errors, stamp `pipeline_versions` and
-    `last_indexed_docs_commit = HEAD` so the next ingest can fast-path.
-    Errors leave the sentinels untouched so retry happens.
+  - Step ∞ (sentinel stamping, on clean runs only — i.e. no errors):
+      * `pipeline_versions` is stamped unconditionally so a version drift
+        with no resulting work doesn't leave the sentinel in `None` forever
+        (which would force-full-scan every subsequent ingest).
+      * `last_indexed_docs_commit` is stamped ONLY when the run did real
+        work (sections_uploaded > 0 OR sections_deleted > 0 OR
+        files_removed > 0). Stamping on every webhook-triggered no-op
+        would create an infinite commit-push-webhook loop: the stamp
+        mutates state.json, the Jenkins wrapper commits the change, the
+        commit fires the webhook, the next ingest stamps a fresh head
+        and recurses. Observed in production: 313 builds in ~90 minutes.
+    Errors leave both sentinels untouched so retry happens.
   - Save state. Caller (Jenkins) commits + pushes the state file.
 
 Exit codes:
@@ -297,13 +306,38 @@ def run(
     )
     _log_stats(stats)
 
-    if not stats.errors:
-        state.last_indexed_docs_commit = head_sha
-        state.pipeline_versions = dict(current_versions)
-        log.info("stamped end-of-cycle: last_commit=%s, versions=%s",
-                 head_sha, current_versions)
-    else:
+    did_real_work = (
+        stats.sections_uploaded > 0
+        or stats.sections_deleted > 0
+        or stats.files_removed > 0
+    )
+
+    if stats.errors:
         log.warning("errors present — sentinels NOT stamped; affected files left stale for retry")
+    else:
+        # `pipeline_versions` stamps unconditionally on clean runs. A bumped
+        # version constant produces a `state.needs_forced_full_scan` sentinel
+        # trigger, but if every section's payload_hash happens to coincide
+        # under both versions (rare but possible) the run finishes with
+        # zero uploads — and we still need to advance the stamp, otherwise
+        # every subsequent ingest re-enters forced-full-scan.
+        state.pipeline_versions = dict(current_versions)
+
+        if did_real_work:
+            # `last_indexed_docs_commit` only advances on real work. A no-op
+            # ingest that bumped this stamp would mutate state.json, the
+            # Jenkins wrapper would commit it, the commit itself would
+            # trigger another webhook, and the next ingest would do the
+            # same thing → infinite loop. Observed in production: 313
+            # builds in ~90 minutes after build #10. Leaving the stamp at
+            # the older commit doesn't lose information — the next real
+            # docs change will be picked up by `git diff` against that
+            # older base just the same.
+            state.last_indexed_docs_commit = head_sha
+            log.info("stamped end-of-cycle: last_commit=%s, versions=%s",
+                     head_sha, current_versions)
+        else:
+            log.info("no-op ingest — last_commit NOT advanced (versions stamped); avoids webhook loop")
 
     save(state_path, state)
     log.info("state saved: %s", state_path)
