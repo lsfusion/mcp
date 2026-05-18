@@ -414,20 +414,33 @@ FORM RULES
    Primitive or derived primitive / text properties
    MUST be exposed instead.
 
-6. The assistant SHOULD specify a `DESIGN`
+6. A `PANEL` object of a user-defined class
+   is NOT user-selectable by default.
+
+   If such an object is meant to be chosen by the user
+   (for example, a filter parameter shown on the form),
+   the assistant MUST mark a displayed property of that object
+   with `SELECTOR` in the `PROPERTIES` block.
+
+   Without `SELECTOR`, the panel cell does not open
+   a selection dialog and the object cannot be changed.
+   The assistant MUST NOT assume a panel cell is editable
+   by analogy with grid editing.
+
+7. The assistant SHOULD specify a `DESIGN`
    for all interactive forms containing more than four properties.
 
-7. Exception:
+8. Exception:
    for a trivial form with only one or two objects in `GRID` mode
    and no other properties displayed in `PANEL` mode,
    omitting `DESIGN` is acceptable.
 
-8. In `DESIGN`, the assistant SHOULD prefer moving `BOX(...)`
+9. In `DESIGN`, the assistant SHOULD prefer moving `BOX(...)`
    containers for tables first.
 
    `GRID(...)` SHOULD be used only when absolutely necessary.
 
-9. If possible, the assistant SHOULD avoid form designs
+10. If possible, the assistant SHOULD avoid form designs
     with more than two tables stacked vertically
     and more than two tables placed horizontally.
 
