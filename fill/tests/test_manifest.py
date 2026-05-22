@@ -1,4 +1,4 @@
-"""Tests for fill.manifest — validate, estimate, check-bootstrap."""
+"""Tests for fill.manifest — validate (folder structure), estimate, check-bootstrap."""
 
 from __future__ import annotations
 
@@ -15,173 +15,92 @@ from fill.manifest import (
 )
 
 
-# ─── validate ──────────────────────────────────────────────────────────────────
+# ─── validate (folder structure) ─────────────────────────────────────────────
 
 
-def _make_layout(tmp_path: Path, manifest: dict, files: list[str]) -> tuple[Path, Path]:
-    """Create manifest.json + docs/ with given files. Returns (manifest_path, docs_dir)."""
-    tmp_path.mkdir(parents=True, exist_ok=True)
-    manifest_path = tmp_path / "manifest.json"
+def _make_docs(tmp_path: Path, relpaths: list[str]) -> Path:
+    """Create docs/ with the given paths (relative to docs/, e.g.
+    'language/AGGR.md'). Returns docs_dir."""
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True, exist_ok=True)
-    for slug in files:
-        (docs_dir / f"{slug}.md").write_text(f"# {slug}\n\nbody\n")
-    manifest_path.write_text(json.dumps(manifest))
-    return manifest_path, docs_dir
+    for rel in relpaths:
+        p = docs_dir / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"# {Path(rel).stem}\n\nbody\n", encoding="utf-8")
+    return docs_dir
 
 
 def test_validate_ok(tmp_path):
-    mp, dd = _make_layout(
-        tmp_path,
-        {
-            "AGGR_operator": {"sourceType": "language"},
-            "Aggregations": {"sourceType": "paradigm"},
-            "How-to_GROUP_SUM": {"sourceType": "how-to"},
-        },
-        ["AGGR_operator", "Aggregations", "How-to_GROUP_SUM"],
-    )
-    r = validate(mp, dd)
-    assert r.ok is True
+    dd = _make_docs(tmp_path, [
+        "language/AGGR_operator.md",
+        "paradigm/Aggregations.md",
+        "how-to/How-to_GROUP_SUM.md",
+        "brief/Brief.md",
+        "rules/Workflow.md",
+    ])
+    r = validate(dd)
+    assert r.ok is True, r.errors
     assert r.errors == []
-    assert r.stats["total"] == 3
-    assert r.stats["per_type"] == {"language": 1, "paradigm": 1, "how-to": 1}
+    assert r.stats["total"] == 5
+    assert r.stats["per_type"] == {
+        "language": 1, "paradigm": 1, "how-to": 1, "brief": 1, "rules": 1,
+    }
 
 
-def test_validate_missing_manifest_file(tmp_path):
-    r = validate(tmp_path / "missing.json", tmp_path)
+def test_validate_file_without_category_folder(tmp_path):
+    dd = _make_docs(tmp_path, ["language/AGGR.md", "STRAY.md"])
+    r = validate(dd)
     assert r.ok is False
-    assert any("not found" in e for e in r.errors)
+    assert any("STRAY.md" in e and "no category folder" in e for e in r.errors)
 
 
-def test_validate_invalid_json(tmp_path):
-    mp = tmp_path / "manifest.json"
-    mp.write_text("not json {{")
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    r = validate(mp, docs)
+def test_validate_unknown_category_folder(tmp_path):
+    dd = _make_docs(tmp_path, ["bogus/Foo.md"])
+    r = validate(dd)
     assert r.ok is False
-    assert any("not valid JSON" in e for e in r.errors)
-
-
-def test_validate_root_not_object(tmp_path):
-    mp = tmp_path / "manifest.json"
-    mp.write_text("[]")
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    r = validate(mp, docs)
-    assert r.ok is False
-    assert any("must be an object" in e for e in r.errors)
-
-
-def test_validate_missing_md_file_for_manifest_entry(tmp_path):
-    mp, dd = _make_layout(
-        tmp_path,
-        {
-            "AGGR_operator": {"sourceType": "language"},
-            "Aggregations": {"sourceType": "paradigm"},
-        },
-        ["AGGR_operator"],  # Aggregations.md absent
-    )
-    r = validate(mp, dd)
-    assert r.ok is False
-    assert any("Aggregations" in e and "no corresponding .md" in e for e in r.errors)
-
-
-def test_validate_md_without_manifest_entry(tmp_path):
-    mp, dd = _make_layout(
-        tmp_path,
-        {"AGGR_operator": {"sourceType": "language"}},
-        ["AGGR_operator", "NewDoc"],
-    )
-    r = validate(mp, dd)
-    assert r.ok is False
-    assert any("NewDoc.md" in e and "missing manifest entry" in e for e in r.errors)
-
-
-def test_validate_bad_source_type(tmp_path):
-    mp, dd = _make_layout(
-        tmp_path, {"Foo": {"sourceType": "tutorial"}}, ["Foo"]
-    )
-    r = validate(mp, dd)
-    assert r.ok is False
-    assert any("sourceType='tutorial' not in" in e for e in r.errors)
-
-
-def test_validate_missing_source_type(tmp_path):
-    mp, dd = _make_layout(tmp_path, {"Foo": {"something_else": "x"}}, ["Foo"])
-    r = validate(mp, dd)
-    assert r.ok is False
-    assert any("missing 'sourceType'" in e for e in r.errors)
-
-
-def test_validate_unclassified_blocked_by_default(tmp_path):
-    mp, dd = _make_layout(tmp_path, {"Foo": {"sourceType": "unclassified"}}, ["Foo"])
-    r = validate(mp, dd)
-    assert r.ok is False
-    assert any("unclassified" in e for e in r.errors)
-
-
-def test_validate_unclassified_allowed_with_flag(tmp_path):
-    mp, dd = _make_layout(tmp_path, {"Foo": {"sourceType": "unclassified"}}, ["Foo"])
-    r = validate(mp, dd, allow_unclassified=True)
-    assert r.ok is True
-
-
-def test_validate_entry_not_object(tmp_path):
-    mp = tmp_path / "manifest.json"
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "Foo.md").write_text("# Foo")
-    mp.write_text(json.dumps({"Foo": "not a dict"}))
-    r = validate(mp, docs)
-    assert r.ok is False
-    assert any("must be an object" in e for e in r.errors)
+    assert any("bogus" in e and "not in" in e for e in r.errors)
 
 
 def test_validate_bad_slug_format(tmp_path):
-    mp = tmp_path / "manifest.json"
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    # Slug with a slash — Docusaurus nested IDs would look like this; we don't allow them yet.
-    mp.write_text(json.dumps({"foo/bar": {"sourceType": "language"}}))
-    r = validate(mp, docs)
+    # A space in the filename → stem fails SLUG_RE, even in a valid folder.
+    dd = _make_docs(tmp_path, ["language/foo bar.md"])
+    r = validate(dd)
     assert r.ok is False
-    assert any("foo/bar" in e for e in r.errors)
+    assert any("does not match" in e for e in r.errors)
 
 
 def test_validate_real_world_slugs_accepted(tmp_path):
-    # Real slugs from platform/docs/en that include `=`, `.`, etc.
     real_slugs = [
         "=_statement",
-        "=gt_statement",
-        "Comparison_operators_=_etc",
-        "IF_..._THEN_action_operator",
-        "Partitioning_sorting_PARTITION_..._ORDER",
-        "AGGR_operator",
         "How-to_GROUP_SUM",
+        "IF_..._THEN_operator",
+        "AGGR_operator",
+        "Access_to_an_external_system_EXTERNAL",
     ]
-    manifest = {s: {"sourceType": "language"} for s in real_slugs}
-    mp, dd = _make_layout(tmp_path, manifest, real_slugs)
-    r = validate(mp, dd)
+    dd = _make_docs(tmp_path, [f"language/{s}.md" for s in real_slugs])
+    r = validate(dd)
     assert r.ok is True, r.errors
 
 
-def test_validate_subdir_md_warning(tmp_path):
-    mp, dd = _make_layout(tmp_path, {"Foo": {"sourceType": "language"}}, ["Foo"])
-    sub = dd / "nested"
-    sub.mkdir()
-    (sub / "Hidden.md").write_text("# Hidden")
-    r = validate(mp, dd)
-    assert r.ok is True  # nested .md is not an error, just a warning
-    assert any("subdirectories" in w for w in r.warnings)
-
-
 def test_validate_docs_dir_missing(tmp_path):
-    mp = tmp_path / "manifest.json"
-    mp.write_text("{}")
-    r = validate(mp, tmp_path / "no-such-dir")
+    r = validate(tmp_path / "no-such-dir")
     assert r.ok is False
     assert any("docs-dir not found" in e for e in r.errors)
+
+
+def test_validate_duplicate_slug_across_folders(tmp_path):
+    # Same stem in two folders → same flat URL / section_id → collision.
+    dd = _make_docs(tmp_path, ["language/Foo.md", "paradigm/Foo.md"])
+    r = validate(dd)
+    assert r.ok is False
+    assert any("duplicate slug" in e for e in r.errors)
+
+
+def test_validate_no_spurious_duplicate_for_unique_stems(tmp_path):
+    dd = _make_docs(tmp_path, ["language/Foo.md", "language/Bar.md"])
+    r = validate(dd)
+    assert r.ok is True, r.errors
+    assert not any("duplicate" in e for e in r.errors)
 
 
 # ─── estimate ──────────────────────────────────────────────────────────────────
@@ -223,30 +142,6 @@ def test_estimate_all_invalid_signals_wiring_bug(tmp_path):
     assert est["files"] == []
     assert est["skipped"] == 2
     assert est["total_chars"] == 0
-
-
-def test_validate_source_type_not_string(tmp_path):
-    mp, dd = _make_layout(tmp_path, {"Foo": {"sourceType": ["language"]}}, ["Foo"])
-    r = validate(mp, dd)
-    assert r.ok is False
-    assert any("must be a string" in e for e in r.errors)
-
-
-def test_validate_duplicate_stem(tmp_path):
-    mp = tmp_path / "manifest.json"
-    docs = tmp_path / "docs"
-    docs.mkdir()
-    (docs / "Foo.md").write_text("# Foo")
-    # On Linux these are distinct files; the validator should report duplicate slug.
-    (docs / "Foo.md.bak").write_text("not md")  # not .md — won't match
-    # Workaround for case-insensitive FS test: create Foo.MD as distinct file (still .md by lowercase)
-    # Most filesystems are case-sensitive in CI; on macOS this would already collide via the FS itself.
-    # Instead simulate the collision by adding two distinct .md stems we'll claim collide.
-    # We'll just test the regular sad path: the path → slug map has 1 entry, manifest mismatches.
-    mp.write_text(json.dumps({"Foo": {"sourceType": "language"}}))
-    r = validate(mp, docs)
-    # Just verify no spurious "duplicate" error when stems are unique.
-    assert not any("duplicate" in e for e in r.errors)
 
 
 # ─── check-bootstrap ───────────────────────────────────────────────────────────
@@ -318,14 +213,14 @@ def test_check_bootstrap_report_without_placeholder(tmp_path):
 
 
 def test_cli_validate_ok_exits_0(tmp_path, capsys):
-    mp, dd = _make_layout(tmp_path, {"Foo": {"sourceType": "language"}}, ["Foo"])
-    rc = main(["validate", "--manifest", str(mp), "--docs-dir", str(dd)])
+    dd = _make_docs(tmp_path, ["language/Foo.md"])
+    rc = main(["validate", "--docs-dir", str(dd)])
     assert rc == 0
 
 
 def test_cli_validate_fail_exits_1(tmp_path, capsys):
-    mp, dd = _make_layout(tmp_path, {"Foo": {"sourceType": "bogus"}}, ["Foo"])
-    rc = main(["validate", "--manifest", str(mp), "--docs-dir", str(dd)])
+    dd = _make_docs(tmp_path, ["bogus/Foo.md"])
+    rc = main(["validate", "--docs-dir", str(dd)])
     assert rc == 1
 
 

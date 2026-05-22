@@ -9,7 +9,7 @@ Transports:
 
 ## Core Tools
 - `lsfusion_get_guidance()`: Fetch mandatory brief and rules.
-- `lsfusion_retrieve_docs(query: string, type?: "language" | "paradigm")`: Official documentation search (language + paradigm sourceTypes from the OpenAI Vector Store; English content only).
+- `lsfusion_retrieve_docs(query: string, type?: "language" | "paradigm" | "how-to" | "brief" | "rules")`: Official documentation search (the five doc-folder sourceTypes from the OpenAI Vector Store; English content only).
 
 ## Quickstart (local)
 

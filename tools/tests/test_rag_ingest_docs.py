@@ -1,14 +1,16 @@
 """Tests for tools/rag_ingest_docs.py — the Jenkins driver script.
 
-Sets up a fake `platform_root` (with `docs/en/`, `.rag/`, `docs/manifest.json`)
-in a tmp dir, injects a `FakeGitRunner` so no real git calls happen, and
-runs the orchestration core (`run()`) end-to-end against a
-`FakeVectorStoreClient`.
+Sets up a fake `platform_root` (with `docs/en/<category>/` and `.rag/`) in a
+tmp dir, injects a `FakeGitRunner` so no real git calls happen, and runs the
+orchestration core (`run()`) end-to-end against a `FakeVectorStoreClient`.
+
+Category comes from the first folder under `docs/en/` (language/paradigm/
+how-to/brief/rules) — there is no manifest. State keys (source_file) are the
+path relative to `docs/en`, e.g. `language/AGGR.md`.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -54,14 +56,17 @@ def _write(p: Path, text: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
-def _platform_root(tmp_path: Path, *, files: dict[str, str], manifest: dict) -> Path:
-    """Build a fake platform repo at tmp_path."""
+def _platform_root(tmp_path: Path, *, files: dict[str, str]) -> Path:
+    """Build a fake platform repo at tmp_path.
+
+    `files` keys are paths relative to `docs/en` (e.g. `language/AGGR.md`);
+    category = the first path component.
+    """
     root = tmp_path / "platform"
     docs_en = root / "docs" / "en"
     docs_en.mkdir(parents=True)
-    for name, body in files.items():
-        _write(docs_en / name, body)
-    _write(root / "docs" / "manifest.json", json.dumps(manifest, indent=2))
+    for relpath, body in files.items():
+        _write(docs_en / relpath, body)
     (root / ".rag").mkdir()
     return root
 
@@ -85,21 +90,8 @@ def test_returns_setup_error_when_docs_root_missing(tmp_path):
     assert code == EXIT_SETUP_ERROR
 
 
-def test_returns_setup_error_when_manifest_missing(tmp_path):
-    root = tmp_path / "platform"
-    (root / "docs" / "en").mkdir(parents=True)
-    code, _ = run(
-        platform_root=root,
-        client=FakeVectorStoreClient(),
-        git=FakeGitRunner(),
-        vector_store_id_override="vs_x",
-    )
-    assert code == EXIT_SETUP_ERROR
-
-
 def test_returns_setup_error_when_no_vector_store_id(tmp_path):
-    root = _platform_root(tmp_path, files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-                          manifest={"AGGR": {"sourceType": "language"}})
+    root = _platform_root(tmp_path, files={"language/AGGR.md": _md("AGGR", "## S\n\nx")})
     code, _ = run(
         platform_root=root,
         client=FakeVectorStoreClient(),
@@ -116,12 +108,8 @@ def test_first_run_does_forced_full_scan_and_stamps_sentinels(tmp_path):
     root = _platform_root(
         tmp_path,
         files={
-            "AGGR.md": _md("AGGR", "## S\n\nfoo"),
-            "OTHER.md": _md("OTHER", "## B\n\nbar"),
-        },
-        manifest={
-            "AGGR": {"sourceType": "language"},
-            "OTHER": {"sourceType": "paradigm"},
+            "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
+            "paradigm/OTHER.md": _md("OTHER", "## B\n\nbar"),
         },
     )
     client = FakeVectorStoreClient()
@@ -145,10 +133,11 @@ def test_first_run_does_forced_full_scan_and_stamps_sentinels(tmp_path):
     assert state.vector_store_id == "vs_x"
     assert state.last_indexed_docs_commit == "commit-001"
     assert state.pipeline_versions is not None
-    assert "AGGR.md" in state.files
-    assert "OTHER.md" in state.files
-    assert state.files["AGGR.md"].indexed_sourceType == "language"
-    assert state.files["OTHER.md"].indexed_sourceType == "paradigm"
+    assert "language/AGGR.md" in state.files
+    assert "paradigm/OTHER.md" in state.files
+    # sourceType is derived from the folder, not a manifest.
+    assert state.files["language/AGGR.md"].indexed_sourceType == "language"
+    assert state.files["paradigm/OTHER.md"].indexed_sourceType == "paradigm"
 
 
 # ─── incremental (git diff) ────────────────────────────────────────────────
@@ -158,14 +147,9 @@ def test_incremental_uses_git_diff_after_baseline(tmp_path):
     root = _platform_root(
         tmp_path,
         files={
-            "AGGR.md": _md("AGGR", "## S\n\nfoo"),
-            "OTHER.md": _md("OTHER", "## B\n\nbar"),
-            "QUIET.md": _md("QUIET", "## C\n\nbaz"),
-        },
-        manifest={
-            "AGGR": {"sourceType": "language"},
-            "OTHER": {"sourceType": "paradigm"},
-            "QUIET": {"sourceType": "language"},
+            "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
+            "paradigm/OTHER.md": _md("OTHER", "## B\n\nbar"),
+            "language/QUIET.md": _md("QUIET", "## C\n\nbaz"),
         },
     )
     client = FakeVectorStoreClient()
@@ -182,7 +166,7 @@ def test_incremental_uses_git_diff_after_baseline(tmp_path):
     code, stats = run(
         platform_root=root,
         client=client,
-        git=FakeGitRunner(head="commit-002", changed=["docs/en/AGGR.md"]),
+        git=FakeGitRunner(head="commit-002", changed=["docs/en/language/AGGR.md"]),
         vector_store_id_override=None,  # use the state's stored vs_id
     )
     assert code == EXIT_OK
@@ -197,8 +181,7 @@ def test_incremental_uses_git_diff_after_baseline(tmp_path):
 def test_incremental_uploads_actually_changed_content(tmp_path):
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\noriginal")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\noriginal")},
     )
     client = FakeVectorStoreClient()
     run(platform_root=root, client=client, git=FakeGitRunner(head="c1"),
@@ -206,12 +189,12 @@ def test_incremental_uploads_actually_changed_content(tmp_path):
     initial_uploads = len(client.upload_calls)
 
     # Actually change the content.
-    (root / "docs" / "en" / "AGGR.md").write_text(
+    (root / "docs" / "en" / "language" / "AGGR.md").write_text(
         _md("AGGR", "## S\n\nMODIFIED"), encoding="utf-8")
 
     code, stats = run(
         platform_root=root, client=client,
-        git=FakeGitRunner(head="c2", changed=["docs/en/AGGR.md"]),
+        git=FakeGitRunner(head="c2", changed=["docs/en/language/AGGR.md"]),
     )
     assert code == EXIT_OK
     assert stats.files_processed == 1
@@ -228,12 +211,8 @@ def test_incremental_unions_stale_files(tmp_path):
     root = _platform_root(
         tmp_path,
         files={
-            "AGGR.md": _md("AGGR", "## S\n\nfoo"),
-            "OTHER.md": _md("OTHER", "## B\n\nbar"),
-        },
-        manifest={
-            "AGGR": {"sourceType": "language"},
-            "OTHER": {"sourceType": "paradigm"},
+            "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
+            "paradigm/OTHER.md": _md("OTHER", "## B\n\nbar"),
         },
     )
     client = FakeVectorStoreClient()
@@ -243,7 +222,7 @@ def test_incremental_unions_stale_files(tmp_path):
     # Hand-edit state to mark OTHER stale.
     state_path = root / ".rag" / "openai-state.json"
     state = load(state_path)
-    state.files["OTHER.md"].stale = True
+    state.files["paradigm/OTHER.md"].stale = True
     from fill.state import save as save_state
     save_state(state_path, state)
 
@@ -257,7 +236,7 @@ def test_incremental_unions_stale_files(tmp_path):
     # OTHER's hash didn't actually change → fast-path skip is gated by stale=True,
     # so it actually re-runs. After this, stale should clear.
     state_after = load(state_path)
-    assert state_after.files["OTHER.md"].stale is False
+    assert state_after.files["paradigm/OTHER.md"].stale is False
 
 
 def test_stale_but_missing_file_is_skipped(tmp_path):
@@ -266,8 +245,7 @@ def test_stale_but_missing_file_is_skipped(tmp_path):
     sees it in files_removed (or reconcile handles it)."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     client = FakeVectorStoreClient()
     run(platform_root=root, client=client, git=FakeGitRunner(head="c1"),
@@ -277,7 +255,7 @@ def test_stale_but_missing_file_is_skipped(tmp_path):
     state_path = root / ".rag" / "openai-state.json"
     state = load(state_path)
     from fill.state import FileRecord, save as save_state
-    state.files["DELETED.md"] = FileRecord(stale=True)
+    state.files["language/DELETED.md"] = FileRecord(stale=True)
     save_state(state_path, state)
 
     code, stats = run(
@@ -297,12 +275,8 @@ def test_incremental_removes_files_per_git_diff(tmp_path):
     root = _platform_root(
         tmp_path,
         files={
-            "AGGR.md": _md("AGGR", "## S\n\nfoo"),
-            "OTHER.md": _md("OTHER", "## B\n\nbar"),
-        },
-        manifest={
-            "AGGR": {"sourceType": "language"},
-            "OTHER": {"sourceType": "paradigm"},
+            "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
+            "paradigm/OTHER.md": _md("OTHER", "## B\n\nbar"),
         },
     )
     client = FakeVectorStoreClient()
@@ -310,16 +284,16 @@ def test_incremental_removes_files_per_git_diff(tmp_path):
         vector_store_id_override="vs_x")
 
     # Actually delete the file on disk, mirror the git diff.
-    (root / "docs" / "en" / "OTHER.md").unlink()
+    (root / "docs" / "en" / "paradigm" / "OTHER.md").unlink()
 
     code, stats = run(
         platform_root=root, client=client,
-        git=FakeGitRunner(head="c2", removed=["docs/en/OTHER.md"]),
+        git=FakeGitRunner(head="c2", removed=["docs/en/paradigm/OTHER.md"]),
     )
     assert code == EXIT_OK
     assert stats.files_removed == 1
     state = load(root / ".rag" / "openai-state.json")
-    assert "OTHER.md" not in state.files
+    assert "paradigm/OTHER.md" not in state.files
 
 
 # ─── errors leave sentinels unstamped ──────────────────────────────────────
@@ -330,8 +304,7 @@ def test_errors_do_not_stamp_sentinels(tmp_path):
     pipeline_versions must NOT be updated. The next run reprocesses."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nfoo")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nfoo")},
     )
     # Establish baseline.
     run(platform_root=root, client=FakeVectorStoreClient(),
@@ -339,13 +312,13 @@ def test_errors_do_not_stamp_sentinels(tmp_path):
 
     # Now force an upload error on the next run.
     client = FakeVectorStoreClient()
-    (root / "docs" / "en" / "AGGR.md").write_text(
+    (root / "docs" / "en" / "language" / "AGGR.md").write_text(
         _md("AGGR", "## S\n\nchanged content"), encoding="utf-8")
     client.fail_upload_for_section_id.add("AGGR::s")
 
     code, stats = run(
         platform_root=root, client=client,
-        git=FakeGitRunner(head="c2", changed=["docs/en/AGGR.md"]),
+        git=FakeGitRunner(head="c2", changed=["docs/en/language/AGGR.md"]),
     )
     assert code == EXIT_INGEST_ERRORS
     assert stats.errors  # non-empty
@@ -355,34 +328,70 @@ def test_errors_do_not_stamp_sentinels(tmp_path):
     # baseline value, not just "not c2".
     assert state.last_indexed_docs_commit == "c1"
     assert state.pipeline_versions is not None  # also pinned from baseline
-    assert state.files["AGGR.md"].stale is True
+    assert state.files["language/AGGR.md"].stale is True
 
 
-# ─── manifest miss ─────────────────────────────────────────────────────────
+# ─── category-folder errors (replaces the old manifest-miss tests) ──────────
 
 
-def test_file_not_in_manifest_is_reported_as_setup_error(tmp_path):
-    """A doc that exists on disk but has no manifest entry should appear in
-    `stats.errors` (via the per-file setup try/except in fill.ingest), and
-    sentinels must NOT be stamped."""
+def test_file_without_category_folder_is_an_error(tmp_path):
+    """A doc directly under docs/en (no category folder) can't resolve a
+    sourceType → per-file setup error (via fill.ingest), sentinels NOT stamped.
+    A sibling in a valid folder is still processed."""
     root = _platform_root(
         tmp_path,
         files={
-            "AGGR.md": _md("AGGR", "## S\n\nfoo"),
-            "UNTRACKED.md": _md("UNTRACKED", "## C\n\nx"),
+            "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
+            "STRAY.md": _md("STRAY", "## C\n\nx"),  # no category folder
         },
-        manifest={"AGGR": {"sourceType": "language"}},  # UNTRACKED missing
     )
     code, stats = run(
         platform_root=root, client=FakeVectorStoreClient(),
         git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x",
     )
     assert code == EXIT_INGEST_ERRORS
-    assert any("UNTRACKED" in err for err in stats.errors)
-    # AGGR was still processed fine.
+    assert any("STRAY" in err for err in stats.errors)
     state = load(root / ".rag" / "openai-state.json")
-    assert state.files["AGGR.md"].stale is False
+    assert state.files["language/AGGR.md"].stale is False
     assert state.last_indexed_docs_commit != "c1"  # NOT stamped (errors present)
+
+
+def test_unknown_category_folder_is_an_error(tmp_path):
+    """A doc under a folder that is not one of the five categories is a
+    per-file error."""
+    root = _platform_root(
+        tmp_path,
+        files={
+            "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
+            "bogus/X.md": _md("X", "## C\n\nx"),  # 'bogus' not a sourceType
+        },
+    )
+    code, stats = run(
+        platform_root=root, client=FakeVectorStoreClient(),
+        git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x",
+    )
+    assert code == EXIT_INGEST_ERRORS
+    assert any("bogus" in err for err in stats.errors)
+
+
+def test_brief_and_rules_folders_are_valid_sourcetypes(tmp_path):
+    """brief/ and rules/ are first-class categories (Phase-1 single files)."""
+    root = _platform_root(
+        tmp_path,
+        files={
+            "brief/Brief.md": _md("Brief", "## Map\n\noverview"),
+            "rules/Workflow.md": _md("Workflow", "## Rule\n\ndo this"),
+        },
+    )
+    code, stats = run(
+        platform_root=root, client=FakeVectorStoreClient(),
+        git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x",
+    )
+    assert code == EXIT_OK
+    assert stats.errors == []
+    state = load(root / ".rag" / "openai-state.json")
+    assert state.files["brief/Brief.md"].indexed_sourceType == "brief"
+    assert state.files["rules/Workflow.md"].indexed_sourceType == "rules"
 
 
 # ─── vector_store_id resolution ────────────────────────────────────────────
@@ -391,8 +400,7 @@ def test_file_not_in_manifest_is_reported_as_setup_error(tmp_path):
 def test_vector_store_id_override_persists_to_state(tmp_path):
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     run(platform_root=root, client=FakeVectorStoreClient(),
         git=FakeGitRunner(head="c1"), vector_store_id_override="vs_first")
@@ -402,7 +410,7 @@ def test_vector_store_id_override_persists_to_state(tmp_path):
 
     # Second run with no override uses stored value.
     run(platform_root=root, client=FakeVectorStoreClient(),
-        git=FakeGitRunner(head="c2", changed=["docs/en/AGGR.md"]))
+        git=FakeGitRunner(head="c2", changed=["docs/en/language/AGGR.md"]))
     state = load(root / ".rag" / "openai-state.json")
     assert state.vector_store_id == "vs_first"
 
@@ -412,14 +420,13 @@ def test_vector_store_id_switch_clears_state_and_does_full_reindex(tmp_path):
     full scan so the new (presumed empty) VS gets every section uploaded."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     # Baseline against vs_old.
     run(platform_root=root, client=FakeVectorStoreClient(),
         git=FakeGitRunner(head="c1"), vector_store_id_override="vs_old")
     state_old = load(root / ".rag" / "openai-state.json")
-    assert state_old.files["AGGR.md"]  # established
+    assert state_old.files["language/AGGR.md"]  # established
     assert state_old.vector_store_id == "vs_old"
 
     # Switch to vs_new. Old state must be wiped + a new full scan uploads
@@ -439,11 +446,11 @@ def test_vector_store_id_switch_clears_state_and_does_full_reindex(tmp_path):
     # old file_ids). Assert via new_client.upload_calls since the two
     # clients share the same fake-file-NN id scheme.
     assert len(new_client.upload_calls) == 1
-    new_file_ids = {srec.file_id for srec in state_new.files["AGGR.md"].sections.values()}
+    new_file_ids = {srec.file_id for srec in state_new.files["language/AGGR.md"].sections.values()}
     assert all(fid in {vs.file_id for vs in new_client.list_sections()} for fid in new_file_ids)
 
 
-# ─── rename handling (round 1 review) ────────────────────────────────────────
+# ─── rename handling ─────────────────────────────────────────────────────────
 
 
 def test_rename_drops_old_and_uploads_new(tmp_path):
@@ -451,70 +458,30 @@ def test_rename_drops_old_and_uploads_new(tmp_path):
     --no-renames. The state should drop the FOO record and upload BAR."""
     root = _platform_root(
         tmp_path,
-        files={"FOO.md": _md("FOO", "## A\n\nfoo")},
-        manifest={
-            "FOO": {"sourceType": "language"},
-            "BAR": {"sourceType": "language"},
-        },
+        files={"language/FOO.md": _md("FOO", "## A\n\nfoo")},
     )
     client = FakeVectorStoreClient()
     run(platform_root=root, client=client, git=FakeGitRunner(head="c1"),
         vector_store_id_override="vs_x")
 
     # Simulate the rename on disk; git diff (with --no-renames) would report:
-    #   deleted: docs/en/FOO.md
-    #   added:   docs/en/BAR.md
-    (root / "docs" / "en" / "FOO.md").rename(root / "docs" / "en" / "BAR.md")
+    #   deleted: docs/en/language/FOO.md
+    #   added:   docs/en/language/BAR.md
+    lang = root / "docs" / "en" / "language"
+    (lang / "FOO.md").rename(lang / "BAR.md")
 
     code, stats = run(
         platform_root=root, client=client,
         git=FakeGitRunner(
             head="c2",
-            changed=["docs/en/BAR.md"],
-            removed=["docs/en/FOO.md"],
+            changed=["docs/en/language/BAR.md"],
+            removed=["docs/en/language/FOO.md"],
         ),
     )
     assert code == EXIT_OK
     state = load(root / ".rag" / "openai-state.json")
-    assert "FOO.md" not in state.files  # old record dropped
-    assert "BAR.md" in state.files       # new file ingested
-
-
-# ─── setup errors (round 1 review) ───────────────────────────────────────────
-
-
-def test_malformed_manifest_returns_setup_error(tmp_path):
-    root = _platform_root(
-        tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
-    )
-    # Clobber the manifest with non-JSON.
-    (root / "docs" / "manifest.json").write_text("not json {{", encoding="utf-8")
-
-    code, _ = run(
-        platform_root=root, client=FakeVectorStoreClient(),
-        git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x",
-    )
-    assert code == EXIT_SETUP_ERROR
-    # State should not have been mutated by a half-run.
-    state_path = root / ".rag" / "openai-state.json"
-    assert not state_path.exists()
-
-
-def test_manifest_with_non_object_root_returns_setup_error(tmp_path):
-    root = _platform_root(
-        tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
-    )
-    (root / "docs" / "manifest.json").write_text("[]", encoding="utf-8")
-
-    code, _ = run(
-        platform_root=root, client=FakeVectorStoreClient(),
-        git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x",
-    )
-    assert code == EXIT_SETUP_ERROR
+    assert "language/FOO.md" not in state.files  # old record dropped
+    assert "language/BAR.md" in state.files       # new file ingested
 
 
 # ─── main() smoke (CLI/env vs_id resolution) ─────────────────────────────────
@@ -538,8 +505,7 @@ def test_main_uses_stored_vector_store_id_when_env_unset(tmp_path, monkeypatch):
     is required. This is the steady-state Jenkins flow."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     head_sha = _init_git_repo(root)
     # Bootstrap state via run(), stamping HEAD as the baseline commit so
@@ -563,8 +529,7 @@ def test_main_first_run_dry_run_works_without_any_vs_id(tmp_path, monkeypatch):
     successful run always leaves vs_id populated)."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     _init_git_repo(root)
     monkeypatch.delenv("RAG_VECTOR_STORE_ID", raising=False)
@@ -580,8 +545,7 @@ def test_main_returns_setup_error_when_no_vs_id_anywhere(tmp_path, monkeypatch):
     """First run with nothing set + no --dry-run → setup error."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     _init_git_repo(root)
     monkeypatch.delenv("RAG_VECTOR_STORE_ID", raising=False)
@@ -593,11 +557,11 @@ def test_main_returns_setup_error_when_no_vs_id_anywhere(tmp_path, monkeypatch):
 
 def test_git_diff_call_uses_correct_base_and_subdir(tmp_path):
     """Pin the exact arguments to git.changed_under so a refactor can't
-    silently widen the diff to docs/ru/ or use the wrong base."""
+    silently widen the diff to docs/ru/ or use the wrong base. The subdir
+    stays `docs/en` (nested category folders match that prefix)."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     # Baseline.
     run(platform_root=root, client=FakeVectorStoreClient(),
@@ -616,8 +580,7 @@ def test_no_op_ingest_does_not_advance_last_commit(tmp_path):
     in production after build #10 — 313 builds in 90 min)."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     # Establish baseline so state has a stamped last_commit.
     run(platform_root=root, client=FakeVectorStoreClient(),
@@ -652,8 +615,7 @@ def test_no_op_ingest_stamps_pipeline_versions(tmp_path):
     future ingest."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     # Baseline.
     run(platform_root=root, client=FakeVectorStoreClient(),
@@ -685,8 +647,7 @@ def test_stale_but_missing_entry_remains_in_state(tmp_path):
     but also isn't auto-removed; reconcile or a later git-diff handles it."""
     root = _platform_root(
         tmp_path,
-        files={"AGGR.md": _md("AGGR", "## S\n\nx")},
-        manifest={"AGGR": {"sourceType": "language"}},
+        files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
     )
     run(platform_root=root, client=FakeVectorStoreClient(),
         git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x")
@@ -694,11 +655,11 @@ def test_stale_but_missing_entry_remains_in_state(tmp_path):
     state_path = root / ".rag" / "openai-state.json"
     state = load(state_path)
     from fill.state import FileRecord, save as save_state
-    state.files["DELETED.md"] = FileRecord(stale=True)
+    state.files["language/DELETED.md"] = FileRecord(stale=True)
     save_state(state_path, state)
 
     run(platform_root=root, client=FakeVectorStoreClient(),
         git=FakeGitRunner(head="c2"))
 
     state_after = load(state_path)
-    assert "DELETED.md" in state_after.files  # entry persists until cleaned
+    assert "language/DELETED.md" in state_after.files  # entry persists until cleaned

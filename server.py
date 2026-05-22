@@ -27,11 +27,11 @@ def lsfusion_retrieve_docs(
         Field(description="Short topical phrase. Semantic match (not literal); rephrase rather than retry the same query if results are weak."),
     ],
     type: Annotated[
-        Literal["language", "paradigm"] | None,
-        Field(default=None, description="Optional sourceType filter. Omit (or pass null) to search both axes. `language` returns syntax / operator reference chunks; `paradigm` returns conceptual / abstraction chunks."),
+        Literal["language", "paradigm", "how-to", "brief", "rules"] | None,
+        Field(default=None, description="Optional sourceType filter (the docs folder). Omit (or pass null) to search all branches and merge. `language` = syntax / operator reference; `paradigm` = concepts / abstractions; `how-to` = task recipes; `brief` = concise capability map; `rules` = code conventions."),
     ] = None,
 ) -> RetrieveDocsOutput:
-    """Search official lsFusion documentation (language reference + paradigm concepts) for chunks relevant to a query. Returns `{docs:[{source,text,score}]}` sorted by descending score. Use `type` to narrow by axis when known; omit to search both. The corpus is English-only (`docs/en/`) — cross-lingual embeddings make non-English queries work, but English wording gives the best recall."""
+    """Search official lsFusion documentation (language, paradigm, how-to, brief, rules) for chunks relevant to a query. Returns `{docs:[{source,text,score}]}` sorted by descending score. Use `type` to narrow to one branch when known; omit to search all and merge. The corpus is English-only (`docs/en/`) — cross-lingual embeddings make non-English queries work, but English wording gives the best recall."""
     return retrieve_docs_tool(query, type)
 
 

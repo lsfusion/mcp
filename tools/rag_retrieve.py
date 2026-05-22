@@ -10,8 +10,14 @@ from settings import (
     SOURCETYPE_DOCUMENTATION,
     SOURCETYPE_DOCUMENTATION_PARADIGM,
     SOURCETYPE_DOCUMENTATION_LANGUAGE,
+    SOURCETYPE_DOCUMENTATION_HOWTO,
+    SOURCETYPE_DOCUMENTATION_BRIEF,
+    SOURCETYPE_DOCUMENTATION_RULES,
     SOURCETYPE_DOC_PARADIGM,
     SOURCETYPE_DOC_LANGUAGE,
+    SOURCETYPE_DOC_HOWTO,
+    SOURCETYPE_DOC_BRIEF,
+    SOURCETYPE_DOC_RULES,
     SOURCETYPE,
     TOP_K,
 )
@@ -67,12 +73,18 @@ def _vs_search_for_source(query: str, source_type: str, top_k: int) -> List[DocI
 ALLOWED_TYPES = (
     SOURCETYPE_DOCUMENTATION_LANGUAGE,
     SOURCETYPE_DOCUMENTATION_PARADIGM,
+    SOURCETYPE_DOCUMENTATION_HOWTO,
+    SOURCETYPE_DOCUMENTATION_BRIEF,
+    SOURCETYPE_DOCUMENTATION_RULES,
 )
 
 # `type` argument → (bare sourceType filter, TOP_K key)
 _TYPE_TO_TOP_K = {
     SOURCETYPE_DOCUMENTATION_LANGUAGE: SOURCETYPE_DOC_LANGUAGE,
     SOURCETYPE_DOCUMENTATION_PARADIGM: SOURCETYPE_DOC_PARADIGM,
+    SOURCETYPE_DOCUMENTATION_HOWTO: SOURCETYPE_DOC_HOWTO,
+    SOURCETYPE_DOCUMENTATION_BRIEF: SOURCETYPE_DOC_BRIEF,
+    SOURCETYPE_DOCUMENTATION_RULES: SOURCETYPE_DOC_RULES,
 }
 
 
@@ -80,10 +92,11 @@ def retrieve_docs_tool(query: str, type: str | None = None) -> RetrieveDocsOutpu
     """Retrieve chunks from the OpenAI Vector Store populated by the
     `ragIngestDocs` Jenkins pipeline.
 
-    `type` filters by chunk sourceType:
-      * omitted / null — search both `language` and `paradigm`, merge results.
-      * `"language"` — only language reference chunks.
-      * `"paradigm"` — only paradigm / conceptual chunks.
+    `type` filters by chunk sourceType (the docs folder):
+      * omitted / null — search all branches (language, paradigm, how-to, brief,
+        rules) with a per-branch quota and merge results by score.
+      * one of `language` / `paradigm` / `how-to` / `brief` / `rules` — only that
+        branch.
 
     The store only holds English (`docs/en/`) content. Cross-lingual
     embeddings make non-English queries work, but English wording is

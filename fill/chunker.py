@@ -45,7 +45,15 @@ from fill.versions import (
     SOURCE_URL_VERSION,
 )
 
-SourceType = Literal["paradigm", "language", "how-to"]
+SourceType = Literal["paradigm", "language", "how-to", "brief", "rules"]
+
+# The category folders under docs/<lang>/ — the single source of truth for the
+# allowed sourceTypes now that category is derived from the folder name (the
+# `docs/manifest.json` slug→sourceType map is gone). Keep in sync with
+# `SourceType` above.
+SOURCE_TYPES: frozenset[str] = frozenset(
+    {"paradigm", "language", "how-to", "brief", "rules"}
+)
 
 # ───────────────────────────── tuning constants ──────────────────────────────
 

@@ -8,7 +8,7 @@ Responsibilities:
       * If state.needs_forced_full_scan() → ALL `docs/en/*.md` files.
       * Else: git-diff `state.last_indexed_docs_commit..HEAD` under `docs/en/`,
         UNION with `state.stale_files()` for the changed-files set.
-  - Resolve sourceType/slug for each file via `docs/manifest.json`.
+  - Resolve sourceType (from the category folder) and slug (filename stem) per file.
   - Run `fill.ingest.ingest_files`.
   - Step ∞ (sentinel stamping, on clean runs only — i.e. no errors):
       * `pipeline_versions` is stamped unconditionally so a version drift
@@ -28,14 +28,13 @@ Exit codes:
   0 — success, no ingest errors.
   1 — ingest ran but produced per-file errors (state saved, sentinels NOT
       stamped, affected files marked `stale=True`). Jenkins treats as failure.
-  2 — setup error (manifest missing, no vector_store_id, etc.). State not
+  2 — setup error (docs root missing, no vector_store_id, etc.). State not
       modified.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import os
 import subprocess
@@ -43,7 +42,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from fill.chunker import SourceType
+from fill.chunker import SOURCE_TYPES, SourceType
 from fill.ingest import DEFAULT_MAX_WORKERS, IngestStats, ingest_files
 from fill.openai_client import FakeVectorStoreClient, VectorStoreClient
 from fill.state import State, load, save
@@ -57,9 +56,9 @@ EXIT_OK = 0
 EXIT_INGEST_ERRORS = 1
 EXIT_SETUP_ERROR = 2
 
-# Path inside `<platform>` to docs (English) and to the manifest.
+# Path inside `<platform>` to docs (English). Category comes from the first
+# subfolder (language/paradigm/how-to/brief/rules); there is no manifest.
 DOCS_SUBDIR = Path("docs/en")
-MANIFEST_RELPATH = Path("docs/manifest.json")
 STATE_RELPATH = Path(".rag/openai-state.json")
 
 
@@ -236,13 +235,9 @@ def run(
     """Run one ingest cycle. Returns (exit_code, stats)."""
     docs_root = platform_root / DOCS_SUBDIR
     state_path = platform_root / STATE_RELPATH
-    manifest_path = platform_root / MANIFEST_RELPATH
 
     if not docs_root.is_dir():
         log.error("docs root not found: %s", docs_root)
-        return EXIT_SETUP_ERROR, IngestStats()
-    if not manifest_path.is_file():
-        log.error("manifest not found: %s", manifest_path)
         return EXIT_SETUP_ERROR, IngestStats()
 
     state = load(state_path)
@@ -268,11 +263,6 @@ def run(
         log.error("no vector_store_id in state and none provided")
         return EXIT_SETUP_ERROR, IngestStats()
 
-    try:
-        manifest = _load_manifest(manifest_path)
-    except (json.JSONDecodeError, OSError, ValueError) as e:
-        log.error("manifest load failed: %s", e)
-        return EXIT_SETUP_ERROR, IngestStats()
     current_versions = pipeline_versions()
 
     try:
@@ -292,7 +282,7 @@ def run(
     log.info("plan: process %d, remove %d (head=%s)",
              len(files_to_process), len(files_removed), head_sha)
 
-    source_type_for, slug_for = _make_lookups(manifest)
+    source_type_for, slug_for = _make_lookups(docs_root)
 
     stats = ingest_files(
         state,
@@ -401,40 +391,50 @@ def _build_file_sets(
 
 
 def _all_docs(docs_root: Path) -> list[Path]:
-    # Flat convention: docs/en/ contains *.md files directly, no nesting.
-    # If that ever changes, both this and `GitRunner.changed_under`'s
-    # path-filter need updating; right now they're symmetric on `*.md`
-    # under docs_root itself.
-    return sorted(p for p in docs_root.glob("*.md") if p.is_file())
+    # Docs are nested one level under docs/en/ by category folder
+    # (language/paradigm/how-to/brief/rules), so recurse — `source_type_for`
+    # validates each file's folder. `GitRunner.changed_under` filters on the
+    # `docs/en` prefix, which still matches nested paths, so the two stay
+    # symmetric.
+    return sorted(p for p in docs_root.rglob("*.md") if p.is_file())
 
 
-# ─── manifest lookup ───────────────────────────────────────────────────────
+# ─── folder-based lookups ───────────────────────────────────────────────────
 
 
-def _load_manifest(path: Path) -> dict[str, dict]:
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"{path}: expected JSON object, got {type(data).__name__}")
-    return data
-
-
-def _make_lookups(manifest: dict[str, dict]) -> tuple[
+def _make_lookups(docs_root: Path) -> tuple[
     Callable[[Path], SourceType],
     Callable[[Path], str],
 ]:
+    """Resolve a doc's category from its folder and its slug from the filename.
+
+    Category = the first path component under `docs_root`
+    (`docs/en/language/AGGR_operator.md` → `language`). There is no manifest;
+    the folder is the single source of truth. A file directly under `docs_root`
+    (no category folder) or in an unknown folder raises — surfacing as a
+    per-file setup error in `fill.ingest`, never aborting the whole run.
+    """
     def slug_for(path: Path) -> str:
         return path.stem
 
     def source_type_for(path: Path) -> SourceType:
-        slug = path.stem
-        entry = manifest.get(slug)
-        if entry is None:
-            raise KeyError(f"slug {slug!r} not in manifest")
-        st = entry.get("sourceType")
-        if not isinstance(st, str):
-            raise ValueError(f"manifest[{slug!r}].sourceType missing or non-string")
-        return st  # type: ignore[return-value]
+        try:
+            rel = path.relative_to(docs_root)
+        except ValueError:
+            raise ValueError(f"{path} is not under docs root {docs_root}")
+        parts = rel.parts
+        if len(parts) < 2:
+            raise ValueError(
+                f"{rel} has no category folder under docs/en "
+                f"(expected <folder>/<file>.md, folder in {sorted(SOURCE_TYPES)})"
+            )
+        folder = parts[0]
+        if folder not in SOURCE_TYPES:
+            raise ValueError(
+                f"{rel}: folder {folder!r} is not a valid sourceType "
+                f"{sorted(SOURCE_TYPES)}"
+            )
+        return folder  # type: ignore[return-value]
 
     return source_type_for, slug_for
 

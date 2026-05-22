@@ -1,9 +1,10 @@
-"""Manifest validator + CLI for platform/docs/manifest.json.
+"""Docs folder-structure validator + CLI helpers for platform/docs.
 
-Used by Jenkins `ragValidateManifest.groovy` (PR-builder) and locally.
-Three subcommands:
+Category comes from the first subfolder under docs/<lang> (language/paradigm/
+how-to/brief/rules) — there is no manifest. `SLUG_RE` lives here as the single
+source of truth for slug shape (imported by `fill.config`). Three subcommands:
 
-  - `validate`  — schema and consistency checks against docs/en
+  - `validate`  — folder-structure + slug-shape check of docs/<lang>
   - `estimate`  — rough size estimate for changed .md files (PR comment)
   - `check-bootstrap`  — verify BOOTSTRAP_DEFAULTS_REVIEWED marker on bootstrap PRs
 
@@ -24,14 +25,11 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
-ALLOWED_SOURCE_TYPES = frozenset({"paradigm", "language", "how-to"})
-UNCLASSIFIED_VALUE = "unclassified"          # sentinel — accepted only with --allow-unclassified
-SLUG_RE = re.compile(r"^[A-Za-z0-9_\-=.]+$")  # platform/docs/en slugs allow letters/digits/_/-/=/. (no /, no whitespace, no :)
+ALLOWED_SOURCE_TYPES = frozenset({"paradigm", "language", "how-to", "brief", "rules"})
+SLUG_RE = re.compile(r"^[A-Za-z0-9_\-=.]+$")  # platform/docs/<lang> slugs allow letters/digits/_/-/=/. (no /, no whitespace, no :)
 
 # Soft caps to bound memory in CI on any single read.
-# manifest.json today is ~20 KB for 345 entries; 5 MB allows ~100x growth.
-# .md files in platform/docs/en are <50 KB each; 2 MB per file is a generous safety cap.
-MAX_MANIFEST_BYTES = 5 * 1024 * 1024
+# .md files in platform/docs are <50 KB each; 2 MB per file is a generous safety cap.
 MAX_MD_BYTES       = 2 * 1024 * 1024
 MAX_REPORT_BYTES   = 1 * 1024 * 1024
 
@@ -77,125 +75,55 @@ class ValidationResult:
 # ─── validate ──────────────────────────────────────────────────────────────────
 
 
-def validate(
-    manifest_path: Path,
-    docs_dir: Path,
-    *,
-    allow_unclassified: bool = False,
-) -> ValidationResult:
-    """Schema + consistency check of manifest.json against docs/en files.
+def validate(docs_dir: Path) -> ValidationResult:
+    """Folder-structure + slug-shape check of docs/<lang> (the manifest is gone;
+    category is the first subfolder).
 
     Errors (any → ok=False):
-      - manifest file missing / invalid JSON / wrong root type
-      - entry not an object, or missing `sourceType` key
-      - sourceType not in {paradigm, language, how-to}; `unclassified` only when allowed
-      - slug fails SLUG_RE
-      - .md file in docs_dir without manifest entry
-      - manifest entry without matching .md file
-
-    Warnings (don't fail):
-      - .md files under subdirectories of docs_dir (silently ignored by top-level scan)
+      - docs_dir missing
+      - an .md file directly under docs_dir (no category folder)
+      - an .md file under a folder that is not an allowed sourceType
+      - a slug (filename stem) failing SLUG_RE
+      - two .md files sharing a slug (case-insensitive) — they would collide on
+        the flat public URL / RAG section_id, even across different folders
     """
     errors: list[str] = []
     warnings: list[str] = []
 
-    if not manifest_path.exists():
-        return ValidationResult(False, [f"manifest not found: {manifest_path}"])
-    manifest_text, err = _read_text_capped(manifest_path, MAX_MANIFEST_BYTES)
-    if err:
-        return ValidationResult(False, [err])
-    try:
-        manifest = json.loads(manifest_text)
-    except json.JSONDecodeError as e:
-        return ValidationResult(False, [f"manifest is not valid JSON: {e}"])
-    except RecursionError:
-        # Deeply-nested JSON bombs hit Python's recursion limit during decode.
-        return ValidationResult(False, [f"manifest exceeds JSON nesting limit: {manifest_path}"])
-    if not isinstance(manifest, dict):
-        return ValidationResult(
-            False, [f"manifest root must be an object, got {type(manifest).__name__}"]
-        )
-
-    for slug, rec in manifest.items():
-        # fullmatch (not match) — `re.match` with `^...$` accepts a trailing
-        # newline because `$` matches before the final \n by default.
-        if not isinstance(slug, str) or not SLUG_RE.fullmatch(slug) or slug in (".", ".."):
-            errors.append(f"manifest key {slug!r} does not match {SLUG_RE.pattern!r}")
-        if not isinstance(rec, dict):
-            errors.append(f"manifest[{slug!r}] must be an object, got {type(rec).__name__}")
-            continue
-        st = rec.get("sourceType")
-        if st is None:
-            errors.append(f"manifest[{slug!r}] missing 'sourceType'")
-            continue
-        if not isinstance(st, str):
-            errors.append(f"manifest[{slug!r}].sourceType must be a string, got {type(st).__name__}")
-            continue
-        if st == UNCLASSIFIED_VALUE:
-            if not allow_unclassified:
-                errors.append(
-                    f"manifest[{slug!r}].sourceType is 'unclassified' "
-                    "(allowed only in bootstrap branch via --allow-unclassified)"
-                )
-        elif st not in ALLOWED_SOURCE_TYPES:
-            errors.append(
-                f"manifest[{slug!r}].sourceType={st!r} not in {sorted(ALLOWED_SOURCE_TYPES)}"
-            )
-
     if not docs_dir.is_dir():
-        errors.append(f"docs-dir not found: {docs_dir}")
-        return ValidationResult(False, errors)
+        return ValidationResult(False, [f"docs-dir not found: {docs_dir}"])
 
-    # Accept any-case .md extension (Foo.md, Foo.MD, Foo.Md) — be tolerant of mixed-case files
-    # since plan doesn't require lowercase-only. Case-insensitive stem-collision detection below
-    # catches the actual hazard (two files mapping to the same logical slug on case-insensitive FS).
-    md_paths = [p for p in docs_dir.iterdir() if p.is_file() and p.suffix.lower() == ".md"]
-    stem_to_paths: dict[str, list[str]] = {}
-    for p in md_paths:
-        stem_to_paths.setdefault(p.stem.casefold(), []).append(p.name)
-    for stem_cf, names in stem_to_paths.items():
-        if len(names) > 1:
-            errors.append(
-                f"duplicate filenames mapping to slug (case-insensitive collision): {sorted(names)}"
-            )
-    file_slugs = {p.stem for p in md_paths}
-    manifest_slugs = set(manifest.keys())
-
-    for slug in sorted(file_slugs - manifest_slugs):
-        errors.append(f"{slug}.md present in {docs_dir} but missing manifest entry")
-    for slug in sorted(manifest_slugs - file_slugs):
-        errors.append(f"manifest[{slug!r}] has no corresponding .md file in {docs_dir}")
-
-    # Cap nested-scan so a miswired Jenkins CWD (e.g. repo root, mounted tree) doesn't
-    # blow up validation time. Stops after first 100 nested .md files; warning indicates "100+".
-    nested: list[Path] = []
-    NESTED_CAP = 100
-    for p in docs_dir.rglob("*.md"):
-        if p.parent != docs_dir:
-            nested.append(p)
-            if len(nested) >= NESTED_CAP:
-                break
-    if nested:
-        sample = ", ".join(str(p.relative_to(docs_dir)) for p in nested[:3])
-        count_label = f"{NESTED_CAP}+" if len(nested) >= NESTED_CAP else str(len(nested))
-        warnings.append(
-            f"{count_label} .md file(s) in subdirectories of {docs_dir} are NOT indexed: "
-            f"e.g. {sample}"
-        )
-
-    # Stats: count only hashable string sourceTypes (non-string ones were already flagged above).
-    per_type = Counter(
-        rec["sourceType"]
-        for rec in manifest.values()
-        if isinstance(rec, dict) and isinstance(rec.get("sourceType"), str)
+    # Recurse: docs live one level down by category folder. Accept any-case .md.
+    md_paths = sorted(
+        p for p in docs_dir.rglob("*.md") if p.is_file() and p.suffix.lower() == ".md"
     )
-    stats = {
-        "total": len(manifest),
-        "per_type": dict(per_type),
-        "missing_in_manifest": len(file_slugs - manifest_slugs),
-        "orphan_in_manifest": len(manifest_slugs - file_slugs),
-    }
+    stem_to_rels: dict[str, list[str]] = {}
+    per_type: Counter = Counter()
+    for p in md_paths:
+        rel = p.relative_to(docs_dir)
+        parts = rel.parts
+        if len(parts) < 2:
+            errors.append(f"{rel}: .md file directly under docs-dir has no category folder")
+        else:
+            folder = parts[0]
+            if folder not in ALLOWED_SOURCE_TYPES:
+                errors.append(
+                    f"{rel}: folder {folder!r} not in {sorted(ALLOWED_SOURCE_TYPES)}"
+                )
+            else:
+                per_type[folder] += 1
+        # fullmatch (not match) — `$` would otherwise accept a trailing newline.
+        if not SLUG_RE.fullmatch(p.stem) or p.stem in (".", ".."):
+            errors.append(f"{rel}: slug {p.stem!r} does not match {SLUG_RE.pattern!r}")
+        stem_to_rels.setdefault(p.stem.casefold(), []).append(str(rel))
 
+    for _stem_cf, rels in sorted(stem_to_rels.items()):
+        if len(rels) > 1:
+            errors.append(
+                f"duplicate slug (case-insensitive) across files: {sorted(rels)}"
+            )
+
+    stats = {"total": len(md_paths), "per_type": dict(per_type)}
     return ValidationResult(ok=not errors, errors=errors, warnings=warnings, stats=stats)
 
 
@@ -355,11 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fill.manifest")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    pv = sub.add_parser("validate", help="schema + consistency check of manifest vs docs/en")
-    pv.add_argument("--manifest", required=True, type=Path)
+    pv = sub.add_parser("validate", help="folder-structure + slug-shape check of docs/<lang>")
     pv.add_argument("--docs-dir", required=True, type=Path)
-    pv.add_argument("--allow-unclassified", action="store_true",
-                    help="permit sourceType='unclassified' (bootstrap branch only)")
     pv.add_argument("--json", action="store_true", help="machine-readable output")
 
     pe = sub.add_parser("estimate", help="rough size estimate for changed .md files (PR comments)")
@@ -378,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "validate":
-        r = validate(args.manifest, args.docs_dir, allow_unclassified=args.allow_unclassified)
+        r = validate(args.docs_dir)
         _print_result(r, args.json)
         return 0 if r.ok else 1
 
