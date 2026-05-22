@@ -444,6 +444,30 @@ FORM RULES
     with more than two tables stacked vertically
     and more than two tables placed horizontally.
 
+11. In a form `PROPERTIES` block, the parameter style on the
+    property or action being added to the form MUST match
+    the block header:
+    - With a common-parameter header
+      `PROPERTIES(p1, ..., pN)`, each entry MUST be specified
+      by its ID only — the common parameters are bound
+      implicitly. Writing `propName(p1, ..., pN)` after the
+      ID is a parse error.
+    - With no common-parameter header (just `PROPERTIES`),
+      each entry MUST carry explicit parameters in
+      parentheses, e.g. `propName(t)` or `actionName()`
+      for parameterless actions.
+
+    The assistant MUST NOT mix the two styles in one block,
+    and MUST NOT repeat the common parameters after the
+    property name when a common-parameter header is in use.
+
+    This rule applies only to the entry being added to the
+    form. Argument lists inside option clauses such as
+    `ON CHANGE actionName(...)`, `READONLYIF expr`,
+    `BACKGROUND expr`, etc. are regular action calls /
+    expressions and ALWAYS use explicit parameters,
+    regardless of the block header.
+
 ----------------------------------------------------------------
 
 MODULE DESIGN RULES
