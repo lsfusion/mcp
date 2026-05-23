@@ -29,3 +29,18 @@ jobs:
           push: true
           tags: ghcr.io/lsfusion/mcp:latest
 
+      # Redeploy production only from main. Runs after the image is pushed,
+      # so the deployMcp job (pulls :latest on ai.lsfusion.org) sees the new
+      # image. Jenkins API-token requests are CSRF-crumb-exempt, so a plain
+      # authenticated POST is enough.
+      - name: Trigger MCP redeploy (Jenkins deployMcp)
+        if: github.ref == 'refs/heads/main'
+        env:
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST \
+            -u "$JENKINS_USER:$JENKINS_TOKEN" \
+            "https://jenkins.lsfusion.org/job/deployMcp/build"
+
