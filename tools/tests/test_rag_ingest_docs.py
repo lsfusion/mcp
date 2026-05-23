@@ -1,12 +1,12 @@
 """Tests for tools/rag_ingest_docs.py — the Jenkins driver script.
 
-Sets up a fake `platform_root` (with `docs/en/<category>/` and `.rag/`) in a
+Sets up a fake `platform_root` (with `docs/<category>/` and `.rag/`) in a
 tmp dir, injects a `FakeGitRunner` so no real git calls happen, and runs the
 orchestration core (`run()`) end-to-end against a `FakeVectorStoreClient`.
 
-Category comes from the first folder under `docs/en/` (language/paradigm/
+Category comes from the first folder under `docs/` (language/paradigm/
 how-to/brief/rules) — there is no manifest. State keys (source_file) are the
-path relative to `docs/en`, e.g. `language/AGGR.md`.
+path relative to `docs`, e.g. `language/AGGR.md`.
 """
 
 from __future__ import annotations
@@ -57,16 +57,22 @@ def _write(p: Path, text: str) -> None:
 
 
 def _platform_root(tmp_path: Path, *, files: dict[str, str]) -> Path:
-    """Build a fake platform repo at tmp_path.
+    """Build a fake platform repo at tmp_path with the TYPE-FIRST layout.
 
-    `files` keys are paths relative to `docs/en` (e.g. `language/AGGR.md`);
-    category = the first path component.
+    `files` keys are LOGICAL source keys "<type>/<stem>.md" (e.g.
+    `language/AGGR.md`) — the same keys the vector store uses. Physically each
+    is written to docs/<type>/en/<stem>.md. A key with no "/" (e.g. `STRAY.md`)
+    is written directly under docs/ to simulate a misplaced, untyped file.
     """
     root = tmp_path / "platform"
-    docs_en = root / "docs" / "en"
-    docs_en.mkdir(parents=True)
+    docs = root / "docs"
+    docs.mkdir(parents=True)
     for relpath, body in files.items():
-        _write(docs_en / relpath, body)
+        if "/" in relpath:
+            t, _, name = relpath.partition("/")
+            _write(docs / t / "en" / name, body)
+        else:
+            _write(docs / relpath, body)
     (root / ".rag").mkdir()
     return root
 
@@ -166,7 +172,7 @@ def test_incremental_uses_git_diff_after_baseline(tmp_path):
     code, stats = run(
         platform_root=root,
         client=client,
-        git=FakeGitRunner(head="commit-002", changed=["docs/en/language/AGGR.md"]),
+        git=FakeGitRunner(head="commit-002", changed=["docs/language/en/AGGR.md"]),
         vector_store_id_override=None,  # use the state's stored vs_id
     )
     assert code == EXIT_OK
@@ -189,12 +195,12 @@ def test_incremental_uploads_actually_changed_content(tmp_path):
     initial_uploads = len(client.upload_calls)
 
     # Actually change the content.
-    (root / "docs" / "en" / "language" / "AGGR.md").write_text(
+    (root / "docs" / "language" / "en" / "AGGR.md").write_text(
         _md("AGGR", "## S\n\nMODIFIED"), encoding="utf-8")
 
     code, stats = run(
         platform_root=root, client=client,
-        git=FakeGitRunner(head="c2", changed=["docs/en/language/AGGR.md"]),
+        git=FakeGitRunner(head="c2", changed=["docs/language/en/AGGR.md"]),
     )
     assert code == EXIT_OK
     assert stats.files_processed == 1
@@ -284,11 +290,11 @@ def test_incremental_removes_files_per_git_diff(tmp_path):
         vector_store_id_override="vs_x")
 
     # Actually delete the file on disk, mirror the git diff.
-    (root / "docs" / "en" / "paradigm" / "OTHER.md").unlink()
+    (root / "docs" / "paradigm" / "en" / "OTHER.md").unlink()
 
     code, stats = run(
         platform_root=root, client=client,
-        git=FakeGitRunner(head="c2", removed=["docs/en/paradigm/OTHER.md"]),
+        git=FakeGitRunner(head="c2", removed=["docs/paradigm/en/OTHER.md"]),
     )
     assert code == EXIT_OK
     assert stats.files_removed == 1
@@ -312,13 +318,13 @@ def test_errors_do_not_stamp_sentinels(tmp_path):
 
     # Now force an upload error on the next run.
     client = FakeVectorStoreClient()
-    (root / "docs" / "en" / "language" / "AGGR.md").write_text(
+    (root / "docs" / "language" / "en" / "AGGR.md").write_text(
         _md("AGGR", "## S\n\nchanged content"), encoding="utf-8")
     client.fail_upload_for_section_id.add("AGGR::s")
 
     code, stats = run(
         platform_root=root, client=client,
-        git=FakeGitRunner(head="c2", changed=["docs/en/language/AGGR.md"]),
+        git=FakeGitRunner(head="c2", changed=["docs/language/en/AGGR.md"]),
     )
     assert code == EXIT_INGEST_ERRORS
     assert stats.errors  # non-empty
@@ -334,44 +340,49 @@ def test_errors_do_not_stamp_sentinels(tmp_path):
 # ─── category-folder errors (replaces the old manifest-miss tests) ──────────
 
 
-def test_file_without_category_folder_is_an_error(tmp_path):
-    """A doc directly under docs/en (no category folder) can't resolve a
-    sourceType → per-file setup error (via fill.ingest), sentinels NOT stamped.
-    A sibling in a valid folder is still processed."""
+def test_untyped_file_is_ignored_not_ingested(tmp_path):
+    """A misplaced .md outside docs/<type>/en/ (here directly under docs/) is
+    not part of the ingested English slice, so it is silently ignored — no
+    error, not indexed. The valid sibling is processed and sentinels stamp.
+    (Type-first scopes the glob to docs/<type>/en; the old layout instead
+    errored on an uncategorized docs/en/STRAY.md.)"""
     root = _platform_root(
         tmp_path,
         files={
             "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
-            "STRAY.md": _md("STRAY", "## C\n\nx"),  # no category folder
+            "STRAY.md": _md("STRAY", "## C\n\nx"),  # docs/STRAY.md — not under <type>/en
         },
     )
     code, stats = run(
         platform_root=root, client=FakeVectorStoreClient(),
         git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x",
     )
-    assert code == EXIT_INGEST_ERRORS
-    assert any("STRAY" in err for err in stats.errors)
+    assert code == EXIT_OK
+    assert stats.errors == []
     state = load(root / ".rag" / "openai-state.json")
-    assert state.files["language/AGGR.md"].stale is False
-    assert state.last_indexed_docs_commit != "c1"  # NOT stamped (errors present)
+    assert "language/AGGR.md" in state.files
+    assert "STRAY.md" not in state.files
+    assert state.last_indexed_docs_commit == "c1"  # clean run → stamped
 
 
-def test_unknown_category_folder_is_an_error(tmp_path):
-    """A doc under a folder that is not one of the five categories is a
-    per-file error."""
+def test_unknown_type_folder_is_ignored(tmp_path):
+    """A folder that is not one of the five types (docs/bogus/en/X.md) is not
+    part of the ingested slice → ignored, no error."""
     root = _platform_root(
         tmp_path,
         files={
             "language/AGGR.md": _md("AGGR", "## S\n\nfoo"),
-            "bogus/X.md": _md("X", "## C\n\nx"),  # 'bogus' not a sourceType
+            "bogus/X.md": _md("X", "## C\n\nx"),  # docs/bogus/en/X.md — 'bogus' not a type
         },
     )
     code, stats = run(
         platform_root=root, client=FakeVectorStoreClient(),
         git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x",
     )
-    assert code == EXIT_INGEST_ERRORS
-    assert any("bogus" in err for err in stats.errors)
+    assert code == EXIT_OK
+    assert stats.errors == []
+    state = load(root / ".rag" / "openai-state.json")
+    assert "bogus/X.md" not in state.files
 
 
 def test_brief_and_rules_folders_are_valid_sourcetypes(tmp_path):
@@ -410,7 +421,7 @@ def test_vector_store_id_override_persists_to_state(tmp_path):
 
     # Second run with no override uses stored value.
     run(platform_root=root, client=FakeVectorStoreClient(),
-        git=FakeGitRunner(head="c2", changed=["docs/en/language/AGGR.md"]))
+        git=FakeGitRunner(head="c2", changed=["docs/language/en/AGGR.md"]))
     state = load(root / ".rag" / "openai-state.json")
     assert state.vector_store_id == "vs_first"
 
@@ -465,17 +476,17 @@ def test_rename_drops_old_and_uploads_new(tmp_path):
         vector_store_id_override="vs_x")
 
     # Simulate the rename on disk; git diff (with --no-renames) would report:
-    #   deleted: docs/en/language/FOO.md
-    #   added:   docs/en/language/BAR.md
-    lang = root / "docs" / "en" / "language"
+    #   deleted: docs/language/en/FOO.md
+    #   added:   docs/language/en/BAR.md
+    lang = root / "docs" / "language" / "en"
     (lang / "FOO.md").rename(lang / "BAR.md")
 
     code, stats = run(
         platform_root=root, client=client,
         git=FakeGitRunner(
             head="c2",
-            changed=["docs/en/language/BAR.md"],
-            removed=["docs/en/language/FOO.md"],
+            changed=["docs/language/en/BAR.md"],
+            removed=["docs/language/en/FOO.md"],
         ),
     )
     assert code == EXIT_OK
@@ -558,7 +569,7 @@ def test_main_returns_setup_error_when_no_vs_id_anywhere(tmp_path, monkeypatch):
 def test_git_diff_call_uses_correct_base_and_subdir(tmp_path):
     """Pin the exact arguments to git.changed_under so a refactor can't
     silently widen the diff to docs/ru/ or use the wrong base. The subdir
-    stays `docs/en` (nested category folders match that prefix)."""
+    stays `docs` (nested category folders match that prefix)."""
     root = _platform_root(
         tmp_path,
         files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
@@ -569,7 +580,7 @@ def test_git_diff_call_uses_correct_base_and_subdir(tmp_path):
 
     git = FakeGitRunner(head="commit-new")
     run(platform_root=root, client=FakeVectorStoreClient(), git=git)
-    assert git.changed_calls == [("commit-base", "commit-new", "docs/en")]
+    assert git.changed_calls == [("commit-base", "commit-new", "docs")]
 
 
 def test_no_op_ingest_does_not_advance_last_commit(tmp_path):

@@ -76,7 +76,7 @@ class State:
     # ─── fast-path / drift ──────────────────────────────────────────────────
 
     def needs_forced_full_scan(self, current_versions: dict[str, str]) -> bool:
-        """Return True if the next ragIngestDocs must scan all docs/en/ files
+        """Return True if the next ragIngestDocs must scan all docs/<type>/en/ files
         instead of using git-diff. Triggers: sentinel after reconcile, or
         pipeline_versions drift from `fill.versions`.
         """
@@ -342,5 +342,5 @@ def remove_section(state: State, source_file: str, section_id: str) -> None:
 
 
 def remove_file(state: State, source_file: str) -> None:
-    """Drop the entire file record (case B: file removed from docs/en/)."""
+    """Drop the entire file record (case B: file removed from docs/<type>/en/)."""
     state.files.pop(source_file, None)

@@ -5,10 +5,12 @@ Responsibilities:
   - Resolve `vector_store_id` (CLI arg, env, or already-stored state).
   - Load state from `<platform>/.rag/openai-state.json`.
   - Step 0: build `files_to_process` and `files_removed`.
-      * If state.needs_forced_full_scan() → ALL `docs/en/*.md` files.
-      * Else: git-diff `state.last_indexed_docs_commit..HEAD` under `docs/en/`,
-        UNION with `state.stale_files()` for the changed-files set.
-  - Resolve sourceType (from the category folder) and slug (filename stem) per file.
+      * If state.needs_forced_full_scan() → ALL `docs/<type>/en/*.md` files.
+      * Else: git-diff `state.last_indexed_docs_commit..HEAD` under `docs/`,
+        keeping only the English slice `docs/<type>/en/*.md`, UNION with
+        `state.stale_files()` for the changed-files set.
+  - Resolve sourceType (the type folder), slug (filename stem), and the logical
+    source key "<type>/<stem>.md" (language segment dropped) per file.
   - Run `fill.ingest.ingest_files`.
   - Step ∞ (sentinel stamping, on clean runs only — i.e. no errors):
       * `pipeline_versions` is stamped unconditionally so a version drift
@@ -56,9 +58,12 @@ EXIT_OK = 0
 EXIT_INGEST_ERRORS = 1
 EXIT_SETUP_ERROR = 2
 
-# Path inside `<platform>` to docs (English). Category comes from the first
-# subfolder (language/paradigm/how-to/brief/rules); there is no manifest.
-DOCS_SUBDIR = Path("docs/en")
+# Path inside `<platform>` to docs. Layout is TYPE-FIRST: docs/<type>/<lang>/
+# (type in language/paradigm/how-to/brief/rules); the RAG corpus is the English
+# slice docs/<type>/en/. There is no manifest — the type folder is the source
+# of truth. The logical key stays "<type>/<stem>.md" (language segment dropped)
+# so the vector store is unaffected by the en/ru<->type/lang layout.
+DOCS_SUBDIR = Path("docs")
 STATE_RELPATH = Path(".rag/openai-state.json")
 
 
@@ -264,6 +269,7 @@ def run(
         return EXIT_SETUP_ERROR, IngestStats()
 
     current_versions = pipeline_versions()
+    source_type_for, slug_for, source_file_for, path_for_key = _make_lookups(docs_root)
 
     try:
         head_sha = git.head_sha()
@@ -274,6 +280,7 @@ def run(
             git=git,
             head_sha=head_sha,
             current_versions=current_versions,
+            path_for_key=path_for_key,
         )
     except (subprocess.CalledProcessError, OSError) as e:
         log.error("git plumbing failed: %s", e)
@@ -281,8 +288,6 @@ def run(
 
     log.info("plan: process %d, remove %d (head=%s)",
              len(files_to_process), len(files_removed), head_sha)
-
-    source_type_for, slug_for = _make_lookups(docs_root)
 
     stats = ingest_files(
         state,
@@ -292,6 +297,7 @@ def run(
         docs_root=docs_root,
         source_type_for=source_type_for,
         slug_for=slug_for,
+        source_file_for=source_file_for,
         max_workers=max_workers,
     )
     _log_stats(stats)
@@ -347,9 +353,10 @@ def _build_file_sets(
     git: GitRunner,
     head_sha: str,
     current_versions: dict[str, str],
+    path_for_key: Callable[[str], Path],
 ) -> tuple[list[Path], list[str]]:
     """Step 0: produce `files_to_process` (absolute paths) and `files_removed`
-    (source_file relative paths, i.e. relative to docs_root)."""
+    (logical source_file keys "<type>/<stem>.md")."""
     if state.needs_forced_full_scan(current_versions):
         log.info("forced full scan (no last_commit or pipeline_versions drift)")
         return _all_docs(docs_root), []
@@ -363,22 +370,22 @@ def _build_file_sets(
         base_sha, head_sha, str(DOCS_SUBDIR)
     )
 
-    # Map repo-relative paths to absolute paths (for files_to_process)
-    # and source_file keys (for files_removed, which is stale-key indexed).
-    changed_abs = [platform_root / p for p in changed_repo_paths if p.endswith(".md")]
-    removed_keys = [
-        str((platform_root / p).relative_to(docs_root))
-        for p in removed_repo_paths
-        if p.endswith(".md")
-    ]
+    # Only the English doc slice docs/<type>/en/*.md is ingested; everything
+    # else under docs/ (ru/, images/, AGENTS.md) is ignored. Crucially, this
+    # also ignores the OLD-layout deletions (docs/en/<type>/*.md) produced by
+    # the type-first migration commit — their logical keys still exist via the
+    # new paths, so dropping them here is what keeps the move churn-free.
+    changed_abs = [platform_root / p for p in changed_repo_paths if _is_en_doc(p)]
+    removed_keys = [_repo_path_to_key(p) for p in removed_repo_paths if _is_en_doc(p)]
 
-    # Union with stale: state.stale_files() keys are source_file relative
-    # paths. A stale entry whose file no longer exists gets skipped here
-    # and removed by a future cycle's git-diff (or by reconcile).
+    # Union with stale: state.stale_files() keys are logical source_file keys.
+    # `path_for_key` maps them back to docs/<type>/en/<stem>.md. A stale entry
+    # whose file no longer exists gets skipped here and removed by a future
+    # cycle's git-diff (or by reconcile).
     stale_abs: list[Path] = []
     missing_stale: list[str] = []
     for k in state.stale_files():
-        path = docs_root / k
+        path = path_for_key(k)
         if path.is_file():
             stale_abs.append(path)
         else:
@@ -391,12 +398,32 @@ def _build_file_sets(
 
 
 def _all_docs(docs_root: Path) -> list[Path]:
-    # Docs are nested one level under docs/en/ by category folder
-    # (language/paradigm/how-to/brief/rules), so recurse — `source_type_for`
-    # validates each file's folder. `GitRunner.changed_under` filters on the
-    # `docs/en` prefix, which still matches nested paths, so the two stay
-    # symmetric.
-    return sorted(p for p in docs_root.rglob("*.md") if p.is_file())
+    # Type-first: ingest the English slice docs/<type>/en/*.md only. `docs/images`
+    # and `docs/<type>/AGENTS.md` are skipped (neither sits under <type>/en).
+    out: list[Path] = []
+    for t in sorted(SOURCE_TYPES):
+        en = docs_root / t / "en"
+        if en.is_dir():
+            out += [p for p in en.rglob("*.md") if p.is_file()]
+    return sorted(out)
+
+
+def _is_en_doc(repo_path: str) -> bool:
+    """True for a repo-relative path docs/<type>/en/<file>.md (the ingested slice)."""
+    parts = Path(repo_path).parts
+    return (
+        len(parts) >= 4
+        and parts[0] == "docs"
+        and parts[1] in SOURCE_TYPES
+        and parts[2] == "en"
+        and repo_path.endswith(".md")
+    )
+
+
+def _repo_path_to_key(repo_path: str) -> str:
+    """docs/<type>/en/<stem>.md -> logical key "<type>/<stem>.md"."""
+    parts = Path(repo_path).parts  # ('docs', <type>, 'en', <file>.md)
+    return f"{parts[1]}/{parts[3]}"
 
 
 # ─── folder-based lookups ───────────────────────────────────────────────────
@@ -405,14 +432,20 @@ def _all_docs(docs_root: Path) -> list[Path]:
 def _make_lookups(docs_root: Path) -> tuple[
     Callable[[Path], SourceType],
     Callable[[Path], str],
+    Callable[[Path], str],
+    Callable[[str], Path],
 ]:
-    """Resolve a doc's category from its folder and its slug from the filename.
+    """Resolve, for a doc at docs/<type>/en/<stem>.md:
+      - source_type_for → the type folder (`language`/`paradigm`/…)
+      - slug_for        → the filename stem
+      - source_file_for → the logical key "<type>/<stem>.md" (language segment
+        dropped, so the key is stable across the en/ru<->type/lang move and the
+        vector store sees no change)
+      - path_for_key    → inverse of source_file_for (used to re-find stale files)
 
-    Category = the first path component under `docs_root`
-    (`docs/en/language/AGGR_operator.md` → `language`). There is no manifest;
-    the folder is the single source of truth. A file directly under `docs_root`
-    (no category folder) or in an unknown folder raises — surfacing as a
-    per-file setup error in `fill.ingest`, never aborting the whole run.
+    The type folder is the single source of truth (no manifest). A path that is
+    not docs/<type>/en/<file>.md raises — surfacing as a per-file setup error in
+    `fill.ingest`, never aborting the whole run.
     """
     def slug_for(path: Path) -> str:
         return path.stem
@@ -423,10 +456,10 @@ def _make_lookups(docs_root: Path) -> tuple[
         except ValueError:
             raise ValueError(f"{path} is not under docs root {docs_root}")
         parts = rel.parts
-        if len(parts) < 2:
+        if len(parts) < 3 or parts[1] != "en":
             raise ValueError(
-                f"{rel} has no category folder under docs/en "
-                f"(expected <folder>/<file>.md, folder in {sorted(SOURCE_TYPES)})"
+                f"{rel}: expected <type>/en/<file>.md "
+                f"(type in {sorted(SOURCE_TYPES)})"
             )
         folder = parts[0]
         if folder not in SOURCE_TYPES:
@@ -436,7 +469,15 @@ def _make_lookups(docs_root: Path) -> tuple[
             )
         return folder  # type: ignore[return-value]
 
-    return source_type_for, slug_for
+    def source_file_for(path: Path) -> str:
+        rel = path.relative_to(docs_root)  # <type>/en/<stem>.md
+        return f"{rel.parts[0]}/{path.name}"
+
+    def path_for_key(key: str) -> Path:
+        t, _, name = key.partition("/")  # "<type>/<stem>.md"
+        return docs_root / t / "en" / name
+
+    return source_type_for, slug_for, source_file_for, path_for_key
 
 
 # ─── logging ────────────────────────────────────────────────────────────────

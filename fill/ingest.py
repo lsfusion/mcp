@@ -68,6 +68,7 @@ def ingest_files(
     docs_root: Path,
     source_type_for: Callable[[Path], SourceType],
     slug_for: Callable[[Path], str],
+    source_file_for: Callable[[Path], str] | None = None,
     now: Callable[[], str] | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
 ) -> IngestStats:
@@ -96,13 +97,17 @@ def ingest_files(
     stats = IngestStats()
     current_versions = pipeline_versions()
     clock = now or _now_utc
+    # Default key = path relative to docs_root (legacy/flat callers); type-first
+    # callers pass a source_file_for that drops the language segment.
+    source_file_for = source_file_for or (lambda p: str(p.relative_to(docs_root)))
 
     # One executor for the whole run. `with` guarantees join even on errors.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         _apply_removals(state, client, files_removed, stats, executor)
         _process_files(
             state, client, files_to_process, docs_root,
-            source_type_for, slug_for, clock, current_versions, stats, executor,
+            source_type_for, slug_for, source_file_for, clock,
+            current_versions, stats, executor,
         )
 
     return stats
@@ -115,6 +120,7 @@ def _process_files(
     docs_root: Path,
     source_type_for: Callable[[Path], SourceType],
     slug_for: Callable[[Path], str],
+    source_file_for: Callable[[Path], str],
     clock: Callable[[], str],
     current_versions: dict[str, str],
     stats: IngestStats,
@@ -128,14 +134,14 @@ def _process_files(
         # Per-file setup is wrapped: a failing manifest lookup or path-mismatch
         # must not abort the whole run; record the error and move on.
         try:
-            source_file = str(path.relative_to(docs_root))
+            source_file = source_file_for(path)
             source_type = source_type_for(path)
             slug = slug_for(path)
         except Exception as e:
             stats.errors.append(f"setup {path}: {e}")
             # Best-effort source_file key for the stale mark.
             try:
-                key = str(path.relative_to(docs_root))
+                key = source_file_for(path)
             except Exception:
                 key = str(path)
             mark_stale(state, key)
