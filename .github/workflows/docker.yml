@@ -22,11 +22,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Feature branches build (Dockerfile validation) but do NOT push, so
+      # :latest only ever holds main — otherwise a feature push would
+      # overwrite :latest and a manual deployMcp could ship unmerged code.
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: ${{ github.ref == 'refs/heads/main' }}
           tags: ghcr.io/lsfusion/mcp:latest
 
       # Redeploy production only from main. Runs after the image is pushed,
