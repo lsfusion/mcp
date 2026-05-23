@@ -35,21 +35,11 @@ def lsfusion_retrieve_docs(
     return retrieve_docs_tool(query, type)
 
 
+from tools.guidance import fetch_guidance
 @mcp.tool()
 def lsfusion_get_guidance() -> str:
     """Fetch the brief overview and mandatory rules for working with lsFusion. The assistant MUST call this at the start of ANY lsFusion-related task if the guidance isn't already in context, and MUST then read and strictly follow all rules it returns."""
-    base_dir = os.path.dirname(__file__)
-    output = []
-
-    for filename in ["brief.md", "rules.md"]:
-        path = os.path.join(base_dir, filename)
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                output.append(f"--- {filename} ---\n{f.read()}")
-        except Exception as e:
-            output.append(f"--- {filename} ---\nError reading file: {e}")
-
-    return "\n\n".join(output)
+    return fetch_guidance()
 
 
 # Template for future tools:

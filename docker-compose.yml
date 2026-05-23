@@ -14,6 +14,9 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-large}
       MCP_HOST: ${MCP_HOST:-0.0.0.0}
       MCP_PORT: ${MCP_PORT:-8000}
+      # get_guidance proxies these published Markdown twins (llms-txt plugin output).
+      GUIDANCE_BRIEF_URL: ${GUIDANCE_BRIEF_URL:-https://docs.lsfusion.org/Brief.md}
+      GUIDANCE_RULES_URL: ${GUIDANCE_RULES_URL:-https://docs.lsfusion.org/Rules.md}
 
     ports:
       - "8000:8000"
