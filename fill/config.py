@@ -14,10 +14,14 @@ detection. **Bump the version constant when changing the URL contract.**
 
 from __future__ import annotations
 
-from fill.manifest import SLUG_RE   # single source of truth for slug shape
+import re
 
-# Length cap on the slug — defense-in-depth in case build_source_url is ever
-# called outside the manifest-validated path. 256 chars matches the budget
+# Single source of truth for slug shape: platform/docs/<lang> slugs allow
+# letters/digits/_/-/=/. (no /, no whitespace, no :). ASCII-only on purpose —
+# Python's str.isalnum() is Unicode-aware and would let `é` through.
+SLUG_RE = re.compile(r"^[A-Za-z0-9_\-=.]+$")
+
+# Length cap on the slug — defense-in-depth guard. 256 chars matches the budget
 # carried by other identity attributes (see plan §"Attribute length validation").
 SLUG_MAX_LEN = 256
 
@@ -45,9 +49,7 @@ def build_source_url(slug: str) -> str:
     "Retrieval policy"); synthetic anchors (`task-001`, `::part-NN`) do not
     correspond to real Docusaurus URL fragments and are intentionally absent.
 
-    Slug must be a non-empty string with no path separators. Validation is
-    enforced by `fill.manifest`'s SLUG_RE — this function trusts inputs that
-    have already passed validation.
+    Slug must be a non-empty string with no path separators, matching SLUG_RE.
     """
     if not slug:
         raise ValueError("build_source_url: slug must be non-empty")
@@ -55,10 +57,6 @@ def build_source_url(slug: str) -> str:
         raise ValueError(
             f"build_source_url: slug length {len(slug)} exceeds cap {SLUG_MAX_LEN}"
         )
-    # Defense-in-depth via the shared SLUG_RE from fill.manifest. Reusing the
-    # exact regex guarantees both modules agree on what a valid slug looks like
-    # (ASCII-only alphanumerics + `_-=.`; Python's `str.isalnum()` is Unicode-
-    # aware and would let `é` through).
     # `fullmatch` rather than `match` — `$` would otherwise accept a trailing
     # newline because in Python regex `$` matches before the final `\n`.
     if not SLUG_RE.fullmatch(slug):
