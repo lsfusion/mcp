@@ -10,6 +10,7 @@ Transports:
 ## Core Tools
 - `lsfusion_get_guidance()`: Fetch mandatory brief and rules.
 - `lsfusion_retrieve_docs(query: string, type?: "language" | "paradigm" | "how-to" | "brief" | "rules")`: Official documentation search (the five doc-folder sourceTypes from the OpenAI Vector Store; English content only).
+- `lsfusion_report_feedback(report)`: Submit one anonymous, depersonalized reinforcement-quality signal (the feedback-loop sink) — classified by `signal_type` (doc gap, expectation-mismatch, unclear `eval` error, missing capability, RAG miss, other). The agent calls it — per the `get_guidance` workflow rule and only with user consent — when a task hit action-affecting friction. Server-side: anti-abuse caps, best-effort redaction, server-computed `dedup_fingerprint`, append to the `reports` event stream. Gated by `FEEDBACK_ENABLED`. Returns `{report_id, status, dedup_fingerprint}`. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Quickstart (local)
 
@@ -52,6 +53,12 @@ Sorted by `score` descending. Structured output is enabled.
 - `OPENAI_API_KEY` — OpenAI API key (required).
 - `RAG_VECTOR_STORE_ID` — OpenAI Vector Store id that `lsfusion_retrieve_docs` searches against (required). Must match the store populated by the `ragIngestDocs` Jenkins pipeline.
 - `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`).
+- `MCP_SERVER_VERSION` — build identifier (image digest / git sha) stamped into every event log line (default `unknown`).
+- `LOG_DIR` — directory for dated JSONL event files. Empty (default) ⇒ event logs go to **stderr only**. Set it to a writable (uid 10001) bind-mount to also append `retrieval-YYYYMMDD.jsonl` (Phase A2).
+- `QUERY_LOG_MAX_CHARS` / `ERROR_LOG_MAX_CHARS` — caps on the verbatim query / error text stored in logs (default 2000 / 500).
+
+## Event logging (`retrieve_docs`)
+Every `lsfusion_retrieve_docs` call emits one structured JSON line (best-effort — a logging failure never breaks the tool). Envelope `{schema_version, event, ts (ISO-8601 UTC ms), server_version, ok}` plus `{query (capped), type, n_requested, n_results, top_score, latency_ms, results:[{rank, source, file_id, filename, score}]}` — no chunk text; `error_class`/`error_message` on failure. Written to **stderr** (keeps the STDIO transport's stdout protocol channel clean; Docker's `json-file` captures stderr anyway), and additionally to a dated file when `LOG_DIR` is set. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Docker
 

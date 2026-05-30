@@ -42,6 +42,13 @@ def lsfusion_get_guidance() -> str:
     return fetch_guidance()
 
 
+from tools.feedback import report_feedback_tool, FeedbackReport, FeedbackOutput
+@mcp.tool(structured_output=True)
+def lsfusion_report_feedback(report: FeedbackReport) -> FeedbackOutput:
+    """Submit ONE anonymous, depersonalized reinforcement-quality signal so lsFusion docs / RAG / eval diagnostics / the platform can be improved. Use `signal_type` to say what kind: a documentation gap, an expectation-mismatch (you expected lsFusion to behave/mean X but it was actually Y — fill `expectation`), an unclear/unactionable `eval` error, a missing capability, a RAG miss, or other. Call this ONLY per the workflow rule from `lsfusion_get_guidance` (the friction was action-affecting) AND only after the user explicitly consents. Send NO source code, file paths, schema/table/customer names, or secrets — only the depersonalized journey (eval errors, the doc queries you tried, expected-vs-actual, how you resolved it) and a recommendation. The feedback is a suggestion, not a decision. Returns `{report_id, status, dedup_fingerprint}`."""
+    return report_feedback_tool(report)
+
+
 # Template for future tools:
 # @mcp.tool()
 # def lint_code(language: str, code: str) -> dict:

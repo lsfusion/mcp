@@ -41,3 +41,28 @@ TOP_K = {
     SOURCETYPE_DOC_BRIEF: 3,
     SOURCETYPE_DOC_RULES: 3,
 }
+
+# === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===
+# Bump when the log envelope/record shape changes.
+LOG_SCHEMA_VERSION = 1
+# Stamped into every event so analytics can attribute records to a build. Ops
+# should set this (image digest / git sha) in the deployment env.
+SERVER_VERSION = os.environ.get("MCP_SERVER_VERSION", "unknown")
+# Directory for dated JSONL event files. Empty => stderr only (A1). A2 points
+# this at the bind-mounted host dir on ai.lsfusion.org.
+LOG_DIR = os.environ.get("LOG_DIR", "")
+# Cap on the verbatim query stored in retrieval logs (privacy / prompt-stuffing guard).
+QUERY_LOG_MAX_CHARS = int(os.environ.get("QUERY_LOG_MAX_CHARS", "2000"))
+# Cap on error text stored when a call fails.
+ERROR_LOG_MAX_CHARS = int(os.environ.get("ERROR_LOG_MAX_CHARS", "500"))
+
+# === report_feedback (feedback loop, Phase B; see MCP-FEEDBACK-PLAN.md) ===
+# Master switch. Off => the tool returns status="disabled" and stores nothing.
+FEEDBACK_ENABLED = os.environ.get("FEEDBACK_ENABLED", "1").lower() not in ("0", "false", "no", "")
+# Anti-abuse caps (reports from agents are noisy; reject pathological payloads).
+REPORT_MAX_EVAL_ERRORS = int(os.environ.get("REPORT_MAX_EVAL_ERRORS", "50"))
+REPORT_MAX_QUERIES = int(os.environ.get("REPORT_MAX_QUERIES", "50"))
+# A single code excerpt longer than this => reject (no source dumps).
+REPORT_CODE_EXCERPT_MAX_CHARS = int(os.environ.get("REPORT_CODE_EXCERPT_MAX_CHARS", "2000"))
+# Total serialized payload cap.
+REPORT_MAX_TOTAL_CHARS = int(os.environ.get("REPORT_MAX_TOTAL_CHARS", "65536"))
