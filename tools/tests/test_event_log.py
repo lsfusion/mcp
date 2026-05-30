@@ -44,3 +44,32 @@ def test_log_dir_failure_is_nonfatal_and_json(capsys, monkeypatch):
     lines = [l for l in capsys.readouterr().err.splitlines() if l.strip()]
     recs = [json.loads(l) for l in lines]  # every stderr line stays valid JSON
     assert any(r["event"] == "event_log_error" and r["ok"] is False for r in recs)
+
+
+def test_log_dir_persists_dated_jsonl_file(tmp_path, monkeypatch):
+    # End-to-end: with LOG_DIR set, emit actually appends a parseable line to a
+    # dated <stream>-YYYYMMDD.jsonl file (the durable sink, no mocks).
+    import datetime
+    import glob
+    monkeypatch.setattr(el, "LOG_DIR", str(tmp_path))
+    el.emit("retrieve_docs", {"n_results": 2}, stream="retrieval", ok=True)
+    el.emit("report_feedback", {"report_id": "rpt_x"}, stream="reports", ok=True)
+
+    day = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+    rfiles = glob.glob(str(tmp_path / f"retrieval-{day}.jsonl"))
+    pfiles = glob.glob(str(tmp_path / f"reports-{day}.jsonl"))
+    assert rfiles and pfiles  # both streams land in their own dated file
+    rec = json.loads(open(rfiles[0], encoding="utf-8").read().strip())
+    assert rec["event"] == "retrieve_docs" and rec["n_results"] == 2
+    assert json.loads(open(pfiles[0], encoding="utf-8").read().strip())["report_id"] == "rpt_x"
+
+
+def test_log_dir_appends_not_truncates(tmp_path, monkeypatch):
+    monkeypatch.setattr(el, "LOG_DIR", str(tmp_path))
+    for i in range(3):
+        el.emit("retrieve_docs", {"n": i}, stream="retrieval")
+    import datetime
+    day = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+    lines = [l for l in open(tmp_path / f"retrieval-{day}.jsonl", encoding="utf-8") if l.strip()]
+    assert len(lines) == 3  # appended, one JSON object per line
+    assert [json.loads(l)["n"] for l in lines] == [0, 1, 2]
