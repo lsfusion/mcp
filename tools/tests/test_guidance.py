@@ -62,3 +62,34 @@ def test_failure_propagates(monkeypatch):
 
     with pytest.raises(urllib.error.URLError):
         g.fetch_guidance(["http://a/Brief.md"])
+
+
+def test_version_is_stable_and_content_derived():
+    assert g.guidance_version("same") == g.guidance_version("same")
+    assert g.guidance_version("a") != g.guidance_version("b")
+    # 12 hex chars, the SHA-256 prefix
+    v = g.guidance_version("x")
+    assert len(v) == 12 and all(c in "0123456789abcdef" for c in v)
+
+
+def test_stamped_guidance_prefixes_matching_version_marker(monkeypatch):
+    monkeypatch.setattr(
+        g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(b"BODY")
+    )
+
+    out = g.stamped_guidance(["http://a/Brief.md"])
+
+    body = "BODY"
+    assert out == f"<!-- lsfusion-guidance version: {g.guidance_version(body)} -->\n\n{body}"
+
+
+def test_build_instructions_is_pure_intro_plus_body_no_fetch(monkeypatch):
+    # build_instructions must NOT fetch — it only formats a pre-fetched body.
+    def boom(*a, **k):
+        raise AssertionError("build_instructions must not hit the network")
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", boom)
+
+    out = g.build_instructions("STAMPED-BODY")
+
+    assert out == f"{g.INSTRUCTIONS_INTRO}\n\nSTAMPED-BODY"
