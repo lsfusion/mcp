@@ -72,7 +72,7 @@ def test_version_is_stable_and_content_derived():
     assert len(v) == 12 and all(c in "0123456789abcdef" for c in v)
 
 
-def test_stamped_guidance_prefixes_matching_version_marker(monkeypatch):
+def test_stamped_guidance_heads_body_with_marker_and_notice(monkeypatch):
     monkeypatch.setattr(
         g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(b"BODY")
     )
@@ -80,16 +80,25 @@ def test_stamped_guidance_prefixes_matching_version_marker(monkeypatch):
     out = g.stamped_guidance(["http://a/Brief.md"])
 
     body = "BODY"
-    assert out == f"<!-- lsfusion-guidance version: {g.guidance_version(body)} -->\n\n{body}"
+    marker = f"<!-- lsfusion-guidance version: {g.guidance_version(body)} -->"
+    assert out == f"{marker}\n{g.GUIDANCE_NOTICE}\n\n{body}"
+    # Version stamps the BODY alone, so it matches an independent hash of the docs.
+    assert g.guidance_version(body) in out
+    assert out.endswith(body)
 
 
-def test_build_instructions_is_pure_intro_plus_body_no_fetch(monkeypatch):
-    # build_instructions must NOT fetch — it only formats a pre-fetched body.
-    def boom(*a, **k):
-        raise AssertionError("build_instructions must not hit the network")
+def test_server_instructions_fit_under_client_truncation_cap():
+    # Clients cap `instructions` (Claude Code at ~2 KB). If this text ever grows
+    # past the cap it arrives mutilated, so guard the budget explicitly.
+    assert len(g.SERVER_INSTRUCTIONS.encode("utf-8")) < 2000
 
-    monkeypatch.setattr(g.urllib.request, "urlopen", boom)
 
-    out = g.build_instructions("STAMPED-BODY")
-
-    assert out == f"{g.INSTRUCTIONS_INTRO}\n\nSTAMPED-BODY"
+def test_server_instructions_point_to_the_tool_and_never_claim_in_context():
+    instr = g.SERVER_INSTRUCTIONS
+    assert "lsfusion_get_guidance" in instr
+    # The regression that made this necessary: telling the assistant the rules
+    # are already present, while the client had silently truncated them away.
+    lowered = instr.lower()
+    assert "already in context" not in lowered
+    assert "do not need to call" not in lowered
+    assert "not included here" in lowered

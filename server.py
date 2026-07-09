@@ -8,34 +8,18 @@ from pydantic import Field
 # FastMCP implements both stdio and Streamable HTTP transports
 from mcp.server.fastmcp import FastMCP
 
-from tools.guidance import build_instructions, stamped_guidance
+from tools.guidance import SERVER_INSTRUCTIONS
 
-# Deliver the lsFusion guidance at the MCP handshake. FastMCP returns
-# `instructions` in the `initialize` response, and clients (e.g. Claude Code)
-# embed it in the system prompt — so the Brief/Rules are guaranteed in context
-# every session, surviving compaction, with no tool call required.
+# `instructions` is returned at the `initialize` handshake and clients embed it
+# in the system prompt. It holds a POINTER to lsfusion_get_guidance, not the
+# guidance itself: clients cap this field (Claude Code at ~2 KB), so shipping the
+# ~52 KB body here delivers a silently mutilated copy with no recoverable tail.
+# The tool is the only channel that can carry the whole thing.
 #
-# Fetched ONCE at boot into GUIDANCE_SNAPSHOT and reused by both the handshake
-# and the `lsfusion_get_guidance` tool, so both channels serve byte-identical
-# content and the same version marker (refresh model = restart the server, per
-# the deploy pipeline). A docs outage must not stop the server from starting:
-# on failure GUIDANCE_SNAPSHOT stays None, the handshake degrades to a pointer,
-# and the tool falls back to a live fetch so it can still recover mid-run.
-try:
-    GUIDANCE_SNAPSHOT: str | None = stamped_guidance()
-    INSTRUCTIONS = build_instructions(GUIDANCE_SNAPSHOT)
-except Exception as exc:  # noqa: BLE001 — any fetch failure degrades to the pointer
-    GUIDANCE_SNAPSHOT = None
-    INSTRUCTIONS = (
-        "lsFusion guidance could not be fetched at connection time "
-        f"({type(exc).__name__}). Call `lsfusion_get_guidance` and follow the "
-        "rules it returns before working on any lsFusion task."
-    )
-
 # === Initialize MCP server ===
 mcp = FastMCP(
     name="lsfusion-mcp",
-    instructions=INSTRUCTIONS,
+    instructions=SERVER_INSTRUCTIONS,
     host=os.getenv("MCP_HOST", "0.0.0.0"),
     port=int(os.getenv("MCP_PORT", "8000")),
     streamable_http_path="/mcp",
@@ -60,12 +44,15 @@ def lsfusion_retrieve_docs(
     return retrieve_docs_tool(query, type)
 
 
-@mcp.tool()
+from tools.guidance import stamped_guidance
+# structured_output=False keeps the result a plain TextContent block. With the
+# default schema (`{"result": <str>}`) a client that persists an oversized result
+# writes it as ONE JSON line with escaped newlines — which file readers that cap
+# line length cannot read back, stranding the guidance entirely.
+@mcp.tool(structured_output=False)
 def lsfusion_get_guidance() -> str:
-    """Fetch the brief overview and mandatory rules for working with lsFusion. The assistant MUST call this at the start of ANY lsFusion-related task if the guidance isn't already in context, and MUST then read and strictly follow all rules it returns. Normally the guidance is already delivered via the MCP handshake `instructions`, so call this only when that block is absent. The result carries a version marker identical to the handshake copy (both come from the same boot-time snapshot)."""
-    # Serve the boot snapshot so this matches the handshake byte-for-byte; only
-    # if the boot fetch failed do we attempt a live fetch to recover mid-run.
-    return GUIDANCE_SNAPSHOT if GUIDANCE_SNAPSHOT is not None else stamped_guidance()
+    """Fetch the brief overview and mandatory rules for working with lsFusion. The assistant MUST call this at the start of ANY lsFusion-related task — writing, modifying or reviewing lsFusion code, or answering questions about its syntax or semantics — and MUST then read and strictly follow all rules it returns. Once per session is enough. The result is large and may exceed your client's inline limit: if it is truncated or saved to a file, read the full file before continuing. It opens with a version marker identifying the published guidance revision."""
+    return stamped_guidance()
 
 
 from tools.feedback import report_feedback_tool, FeedbackReport, FeedbackOutput
