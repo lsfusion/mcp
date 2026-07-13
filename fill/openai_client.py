@@ -13,6 +13,7 @@ match OpenAI's Vector Store file-attribute API.
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -23,11 +24,17 @@ AttrValue = str | int | bool
 @dataclass(frozen=True)
 class VectorStoreSection:
     """One file's identity in a Vector Store, as observed by the client.
-    Used by `fill.reconcile` to flatten what OpenAI has and compare to state.
+    Used by `fill.reconcile` to flatten what OpenAI has and compare to state,
+    and by `fill.ingest` adoption/sweep.
+
+    `created_at` is the VS attach timestamp (unix seconds); None when the
+    upstream object doesn't carry one. The ingest sweep treats None as
+    too-recent-to-delete.
     """
 
     file_id: str
     attributes: dict[str, AttrValue]
+    created_at: int | None = None
 
 
 class VectorStoreClient(Protocol):
@@ -66,10 +73,14 @@ class FakeVectorStoreClient:
     Fault injection:
       - `fail_upload_for_section_id`: section_ids whose upload should raise.
       - `fail_delete_for_file_id`: file_ids whose delete should raise.
+
+    `clock` supplies `created_at` for uploads (unix seconds); tests inject a
+    frozen clock to reason about the ingest sweep's grace window.
     """
 
-    def __init__(self) -> None:
-        self._files: dict[str, tuple[str, dict[str, AttrValue]]] = {}
+    def __init__(self, clock=None) -> None:
+        self._clock = clock or (lambda: int(time.time()))
+        self._files: dict[str, tuple[str, dict[str, AttrValue], int]] = {}
         self._next_id = 0
         # The lock guards ALL state in this fake (`_files`, `_next_id`,
         # `upload_calls`, `delete_calls`) so it stays safe under
@@ -96,7 +107,7 @@ class FakeVectorStoreClient:
         with self._lock:
             file_id = f"fake-file-{self._next_id}"
             self._next_id += 1
-            self._files[file_id] = (content, dict(attributes))
+            self._files[file_id] = (content, dict(attributes), self._clock())
             self.upload_calls.append(
                 {"file_id": file_id, "filename": filename, "attributes": dict(attributes)}
             )
@@ -117,8 +128,8 @@ class FakeVectorStoreClient:
         with self._lock:
             items = list(self._files.items())
         return [
-            VectorStoreSection(file_id=fid, attributes=dict(attrs))
-            for fid, (_, attrs) in items
+            VectorStoreSection(file_id=fid, attributes=dict(attrs), created_at=created)
+            for fid, (_, attrs, created) in items
         ]
 
     # ─── test helpers ──────────────────────────────────────────────────────
@@ -133,9 +144,16 @@ class FakeVectorStoreClient:
     def file_count(self) -> int:
         return len(self._files)
 
-    def preload(self, file_id: str, attributes: dict[str, AttrValue], content: str = "") -> None:
+    def preload(
+        self,
+        file_id: str,
+        attributes: dict[str, AttrValue],
+        content: str = "",
+        created_at: int = 0,
+    ) -> None:
         """Inject a VS entry with a chosen file_id, bypassing the upload log.
         For tests that reason about VS state (e.g. fill.reconcile) rather
-        than how it got there."""
+        than how it got there. `created_at` defaults to 0 (ancient) so a
+        preloaded orphan is sweepable unless the test says otherwise."""
         with self._lock:
-            self._files[file_id] = (content, dict(attributes))
+            self._files[file_id] = (content, dict(attributes), created_at)

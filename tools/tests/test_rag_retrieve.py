@@ -33,11 +33,17 @@ def test_allowed_types_are_the_five_branches():
     assert set(rr.ALLOWED_TYPES) == {"language", "paradigm", "how-to", "brief", "rules"}
 
 
-def test_omitted_type_searches_all_five_branches(monkeypatch):
+def test_omitted_type_searches_default_branches_without_guidance_types(monkeypatch):
     seen = _record_branches(monkeypatch)
     rr.retrieve_docs_tool("anything")
-    assert set(seen) == set(rr.ALLOWED_TYPES)
-    assert len(seen) == 5
+    assert set(seen) == {"language", "paradigm", "how-to"}
+    assert len(seen) == 3
+
+
+def test_default_types_is_allowed_types_minus_guidance_types():
+    # brief + rules ship in full via get_guidance — chunks only on explicit type.
+    assert set(rr.GUIDANCE_TYPES) == {"brief", "rules"}
+    assert set(rr.DEFAULT_TYPES) == set(rr.ALLOWED_TYPES) - set(rr.GUIDANCE_TYPES)
 
 
 def test_specific_type_searches_only_that_branch(monkeypatch):

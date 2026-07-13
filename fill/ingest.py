@@ -18,14 +18,26 @@ Per-file logic (see RAG-PLAN.md §"ragIngestDocs"):
 Failure handling: any upload/delete error is recorded in `IngestStats.errors`
 and the affected file is marked `stale=True` so the next ingest cycle
 retries. State always ends in a self-consistent form for the operations
-that did succeed — there is no rollback. Orphans (new file uploaded but
-state still pointing at old, etc.) are caught by
-`ragRebuildIndex --mode reconcile`.
+that did succeed — there is no rollback.
+
+Orphans (VS files unknown to state — e.g. a run that uploaded sections but
+crashed before its state was persisted, or a replaced section whose delete
+failed) are handled by two cooperating mechanisms fed by ONE start-of-run
+VS listing:
+  • Adoption: a section about to be uploaded whose exact
+    `(section_id, section_payload_hash)` already sits in the VS untracked
+    gets its file_id recorded instead of re-uploaded — a crashed run's work
+    is recovered, not duplicated.
+  • Sweep: after processing, untracked files older than the grace window
+    are deleted. Sweep failures are soft (`IngestStats.sweep_errors`) — the
+    orphan just survives until the next run. `ragRebuildIndex --mode
+    reconcile` remains the recovery path for a lost/corrupted state file.
 """
 
 from __future__ import annotations
 
 import hashlib
+import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -38,8 +50,13 @@ from typing import Callable
 # `max_workers` kwarg on `ingest_files`.
 DEFAULT_MAX_WORKERS = 8
 
+# Sweep grace window: an untracked VS file younger than this is presumed to
+# belong to a concurrent ingest run (its ledger record just isn't visible to
+# us) and is left alone. A real orphan has survived at least one full run.
+DEFAULT_SWEEP_GRACE_SECONDS = 3600
+
 from fill.chunker import Section, SourceType, chunk_md
-from fill.openai_client import AttrValue, VectorStoreClient
+from fill.openai_client import AttrValue, VectorStoreClient, VectorStoreSection
 from fill.state import FileRecord, SectionRecord, State, mark_stale, remove_file
 from fill.versions import pipeline_versions
 
@@ -48,15 +65,27 @@ from fill.versions import pipeline_versions
 class IngestStats:
     """Counters + error list for one ingest cycle. Errors are strings —
     the operator inspects them in CI output; programmatic handling is
-    intentionally not supported (this isn't a retry orchestrator)."""
+    intentionally not supported (this isn't a retry orchestrator).
+
+    `sweep_errors` is separate from `errors` on purpose: a failed orphan
+    delete (or a failed VS listing) must not fail the run or block sentinel
+    stamping — the orphan simply survives until the next run."""
 
     files_seen: int = 0
     files_fast_path_skipped: int = 0
     files_processed: int = 0
     files_removed: int = 0
     sections_uploaded: int = 0
+    sections_adopted: int = 0
     sections_deleted: int = 0
+    orphans_swept: int = 0
+    sweep_skipped_recent: int = 0
+    # Counted apart from `sweep_skipped_recent`: a store that stops reporting
+    # created_at would silently disable the sweep, and this counter is the
+    # only signal distinguishing that from legitimate grace-window skips.
+    sweep_skipped_no_created_at: int = 0
     errors: list[str] = field(default_factory=list)
+    sweep_errors: list[str] = field(default_factory=list)
 
 
 def ingest_files(
@@ -71,6 +100,8 @@ def ingest_files(
     source_file_for: Callable[[Path], str] | None = None,
     now: Callable[[], str] | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
+    sweep: bool = True,
+    now_ts: Callable[[], float] | None = None,
 ) -> IngestStats:
     """Apply one ingest cycle. Mutates `state` in place.
 
@@ -91,6 +122,9 @@ def ingest_files(
             via `as_completed`, so the only concurrent code path is the
             VectorStoreClient I/O — which is what we want to parallelize
             (OpenAI `create_and_poll` is mostly idle time on the poll loop).
+        sweep: delete untracked VS files (orphans) at the end of the run.
+            Adoption runs regardless — it only prevents duplicate uploads.
+        now_ts: epoch-seconds clock injection for the sweep grace window.
     """
     if max_workers < 1:
         raise ValueError(f"max_workers must be >= 1, got {max_workers}")
@@ -101,16 +135,108 @@ def ingest_files(
     # callers pass a source_file_for that drops the language segment.
     source_file_for = source_file_for or (lambda p: str(p.relative_to(docs_root)))
 
+    # One VS listing per run feeds both adoption (reuse a crashed run's
+    # uploads instead of duplicating them) and the end-of-run orphan sweep.
+    # A listing failure degrades gracefully: upload everything, sweep nothing.
+    known_ids = {
+        srec.file_id
+        for rec in state.files.values()
+        for srec in rec.sections.values()
+    }
+    try:
+        adoption = _AdoptionIndex(client.list_sections(), known_ids)
+    except Exception as e:  # noqa: BLE001 — degrade, don't fail the run
+        stats.sweep_errors.append(f"list_sections failed (adoption+sweep skipped): {e}")
+        adoption = _AdoptionIndex([], set())
+        sweep = False
+
     # One executor for the whole run. `with` guarantees join even on errors.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         _apply_removals(state, client, files_removed, stats, executor)
         _process_files(
             state, client, files_to_process, docs_root,
             source_type_for, slug_for, source_file_for, clock,
-            current_versions, stats, executor,
+            current_versions, stats, executor, adoption,
         )
+        # After _process_files every adoption has been taken, so leftovers()
+        # is final. Runs inside the `with` so deletes share the worker pool —
+        # the first post-deploy sweep can face a large backlog.
+        if sweep:
+            _sweep_orphans(
+                client, adoption.leftovers(), now_ts or time.time,
+                stats, executor,
+            )
 
     return stats
+
+
+class _AdoptionIndex:
+    """VS files unknown to the ledger, indexed for reuse.
+
+    Built from the start-of-run listing. `take` hands an untracked file to a
+    section about to be uploaded when `(section_id, section_payload_hash)`
+    match: attributes are stamped by `_section_attributes` and payloads are
+    byte-identical for equal hashes, so recording the existing file_id is
+    equivalent to a fresh upload. Files never taken are orphans;
+    `leftovers()` feeds them to the sweep."""
+
+    def __init__(self, listing: list[VectorStoreSection], known_ids: set[str]) -> None:
+        self._by_key: dict[tuple[str, str], list[VectorStoreSection]] = {}
+        self._unknown: dict[str, VectorStoreSection] = {}
+        for vs in listing:
+            if vs.file_id in known_ids:
+                continue
+            self._unknown[vs.file_id] = vs
+            sid = vs.attributes.get("section_id")
+            payload_hash = vs.attributes.get("section_payload_hash")
+            if isinstance(sid, str) and sid and isinstance(payload_hash, str) and payload_hash:
+                self._by_key.setdefault((sid, payload_hash), []).append(vs)
+        for candidates in self._by_key.values():
+            # Lex-smallest file_id wins — same arbitrary-but-stable tiebreak
+            # as fill.reconcile._resolve_slots. Losers stay for the sweep.
+            candidates.sort(key=lambda v: v.file_id)
+
+    def take(self, section_id: str, payload_hash: str) -> VectorStoreSection | None:
+        candidates = self._by_key.get((section_id, payload_hash))
+        if not candidates:
+            return None
+        vs = candidates.pop(0)
+        del self._unknown[vs.file_id]
+        return vs
+
+    def leftovers(self) -> list[VectorStoreSection]:
+        return list(self._unknown.values())
+
+
+def _sweep_orphans(
+    client: VectorStoreClient,
+    leftovers: list[VectorStoreSection],
+    now_ts: Callable[[], float],
+    stats: IngestStats,
+    executor: ThreadPoolExecutor,
+) -> None:
+    """Delete VS files the ledger doesn't know about. Only files older than
+    DEFAULT_SWEEP_GRACE_SECONDS go: a concurrent run's fresh uploads are not
+    in OUR ledger view, and age is the only signal separating them from real
+    orphans. A missing created_at also counts as recent, tracked in its own
+    counter (see IngestStats.sweep_skipped_no_created_at)."""
+    now = now_ts()
+    futures: dict[Future, str] = {}
+    for vs in leftovers:
+        if vs.created_at is None:
+            stats.sweep_skipped_no_created_at += 1
+            continue
+        if now - vs.created_at < DEFAULT_SWEEP_GRACE_SECONDS:
+            stats.sweep_skipped_recent += 1
+            continue
+        futures[executor.submit(client.delete_section, vs.file_id)] = vs.file_id
+    for fut in as_completed(futures):
+        file_id = futures[fut]
+        try:
+            fut.result()
+            stats.orphans_swept += 1
+        except Exception as e:  # noqa: BLE001 — soft: orphan survives to next run
+            stats.sweep_errors.append(f"sweep {file_id}: {e}")
 
 
 def _process_files(
@@ -125,6 +251,7 @@ def _process_files(
     current_versions: dict[str, str],
     stats: IngestStats,
     executor: ThreadPoolExecutor,
+    adoption: _AdoptionIndex,
 ) -> None:
     """Per-file loop. Files run sequentially (state mutations per file are
     not partitioned by sid the same way upload/delete are); sections within
@@ -176,6 +303,7 @@ def _process_files(
             new_sections=new_sections,
             stats=stats,
             executor=executor,
+            adoption=adoption,
         )
         stats.files_processed += 1
 
@@ -245,6 +373,7 @@ def _apply_file_diff(
     new_sections: list[Section],
     stats: IngestStats,
     executor: ThreadPoolExecutor,
+    adoption: _AdoptionIndex,
 ) -> None:
     new_by_id: dict[str, Section] = {s.section_id: s for s in new_sections}
     # `old_rec` is the existing FileRecord, or a throwaway empty one if this
@@ -255,12 +384,29 @@ def _apply_file_diff(
     old_sections = dict(old_rec.sections)
     had_error = False
 
-    # ─── phase 1: parallel upload of new/changed sections ─────────────────
+    # ─── phase 1: adopt or upload new/changed sections ─────────────────────
+    delete_old_futures: dict[Future, tuple[str, str]] = {}
     upload_futures: dict[Future, tuple[str, Section, SectionRecord | None]] = {}
     for sid, sec in new_by_id.items():
         old = old_sections.get(sid)
         if old is not None and old.section_payload_hash == sec.section_payload_hash:
             continue  # unchanged
+        # A file with this exact payload may already sit in the VS untracked
+        # (a previous run uploaded it, then crashed before its ledger record
+        # was persisted). Adopt it instead of uploading a duplicate.
+        adopted = adoption.take(sid, sec.section_payload_hash)
+        if adopted is not None:
+            stats.sections_adopted += 1
+            _ensure_file_record(state, source_file).sections[sid] = SectionRecord(
+                file_id=adopted.file_id,
+                section_payload_hash=sec.section_payload_hash,
+                heading_path=sec.heading_path,
+                source_file=source_file,
+            )
+            if old is not None:
+                d = executor.submit(client.delete_section, old.file_id)
+                delete_old_futures[d] = (sid, old.file_id)
+            continue
         attributes = _section_attributes(sec, source_file, file_hash)
         filename = _filename_for(sid)
         fut = executor.submit(
@@ -275,7 +421,6 @@ def _apply_file_diff(
     # main thread as each upload completes. The old file_id only gets
     # scheduled for deletion AFTER its replacement upload has succeeded —
     # so an upload failure leaves the old file_id intact in the VS.
-    delete_old_futures: dict[Future, tuple[str, str]] = {}
     for fut in as_completed(upload_futures):
         sid, sec, old = upload_futures[fut]
         try:

@@ -199,9 +199,11 @@ class OpenAIVectorStoreClient:
             page_data = list(page.data or [])
             for vsf in page_data:
                 attrs = getattr(vsf, "attributes", None) or {}
+                created_at = getattr(vsf, "created_at", None)
                 sections.append(VectorStoreSection(
                     file_id=vsf.id,
                     attributes=dict(attrs),
+                    created_at=created_at if isinstance(created_at, int) else None,
                 ))
             if not getattr(page, "has_more", False):
                 break

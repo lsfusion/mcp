@@ -9,7 +9,7 @@ Transports:
 
 ## Core Tools
 - `lsfusion_get_guidance()`: Fetch mandatory brief and rules.
-- `lsfusion_retrieve_docs(query: string, type?: "language" | "paradigm" | "how-to" | "brief" | "rules")`: Official documentation search (the five doc-folder sourceTypes from the OpenAI Vector Store; English content only).
+- `lsfusion_retrieve_docs(query: string, type?: "language" | "paradigm" | "how-to" | "brief" | "rules")`: Official documentation search (the five doc-folder sourceTypes from the OpenAI Vector Store; English content only). When `type` is omitted, `brief` and `rules` are not searched — their full text already ships via `lsfusion_get_guidance` / the handshake `instructions`.
 - `lsfusion_report_feedback(report)`: Submit one anonymous, depersonalized reinforcement-quality signal (the feedback-loop sink) — classified by `signal_type` (doc gap, expectation-mismatch, unclear `eval` error, missing capability, RAG miss, other). The agent calls it — per the `get_guidance` workflow rule and only with user consent — when a task hit action-affecting friction. Server-side: anti-abuse caps, best-effort redaction, server-computed `dedup_fingerprint`, append to the `reports` event stream. Gated by `FEEDBACK_ENABLED`. Returns `{report_id, status, dedup_fingerprint}`. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Quickstart (local)

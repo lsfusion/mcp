@@ -101,6 +101,15 @@ ALLOWED_TYPES = (
     SOURCETYPE_DOCUMENTATION_RULES,
 )
 
+# Branches whose FULL text get_guidance / the MCP handshake already delivers.
+# Excluded from the default search: the per-branch quota was forcing their
+# low-relevance chunks into every response, duplicating what the assistant has
+# in context. An explicit `type="brief"` / `type="rules"` still searches them.
+GUIDANCE_TYPES = (SOURCETYPE_DOCUMENTATION_BRIEF, SOURCETYPE_DOCUMENTATION_RULES)
+
+# Branches searched when `type` is omitted.
+DEFAULT_TYPES = tuple(t for t in ALLOWED_TYPES if t not in GUIDANCE_TYPES)
+
 # `type` argument → (bare sourceType filter, TOP_K key)
 _TYPE_TO_TOP_K = {
     SOURCETYPE_DOCUMENTATION_LANGUAGE: SOURCETYPE_DOC_LANGUAGE,
@@ -116,8 +125,9 @@ def retrieve_docs_tool(query: str, type: str | None = None) -> RetrieveDocsOutpu
     `ragIngestDocs` Jenkins pipeline.
 
     `type` filters by chunk sourceType (the docs folder):
-      * omitted / null — search all branches (language, paradigm, how-to, brief,
-        rules) with a per-branch quota and merge results by score.
+      * omitted / null — search language, paradigm and how-to with a
+        per-branch quota and merge results by score. `brief` and `rules` are
+        not searched by default (see GUIDANCE_TYPES).
       * one of `language` / `paradigm` / `how-to` / `brief` / `rules` — only that
         branch.
 
@@ -132,7 +142,7 @@ def retrieve_docs_tool(query: str, type: str | None = None) -> RetrieveDocsOutpu
             raise ValueError(
                 f"type must be one of {ALLOWED_TYPES} or null/omitted, got {type!r}"
             )
-        requested = (type,) if type else ALLOWED_TYPES
+        requested = (type,) if type else DEFAULT_TYPES
         hits: List[_Hit] = []
         for source_type in requested:
             hits.extend(_vs_search_for_source(
@@ -167,7 +177,7 @@ def _log_retrieval(
             "query": (query or "")[:QUERY_LOG_MAX_CHARS],
             "type": type_arg,
             # Total chunk budget requested across the searched branches (sum of
-            # per-branch TOP_K), NOT the branch count — e.g. 15 when type is omitted.
+            # per-branch TOP_K), NOT the branch count — e.g. 9 when type is omitted.
             "n_requested": (
                 sum(TOP_K.get(_TYPE_TO_TOP_K[s], 0) for s in requested) if requested else None
             ),

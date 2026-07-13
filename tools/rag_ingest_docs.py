@@ -11,7 +11,9 @@ Responsibilities:
         `state.stale_files()` for the changed-files set.
   - Resolve sourceType (the type folder), slug (filename stem), and the logical
     source key "<type>/<stem>.md" (language segment dropped) per file.
-  - Run `fill.ingest.ingest_files`.
+  - Run `fill.ingest.ingest_files` (which also adopts untracked VS files
+    matching sections it would otherwise upload, and sweeps orphaned VS
+    files older than the grace window — disable the latter with --no-sweep).
   - Step ∞ (sentinel stamping, on clean runs only — i.e. no errors):
       * `pipeline_versions` is stamped unconditionally so a version drift
         with no resulting work doesn't leave the sentinel in `None` forever
@@ -174,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             git=git,
             vector_store_id_override=override_for_run,
             max_workers=args.max_workers,
+            sweep=not args.no_sweep,
         )
     except (ValueError, OSError, subprocess.CalledProcessError) as e:
         log.error("setup failure during run: %s", e)
@@ -209,6 +212,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         f"most of its time polling for indexing; the default gets "
                         f"close to Nx speedup before OpenAI rate limits kick in. "
                         f"Set to 1 to debug serially.")
+    p.add_argument("--no-sweep", action="store_true",
+                   help="Skip the end-of-run orphan sweep: VS files unknown to "
+                        "state are left in place (adoption still runs).")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -236,6 +242,7 @@ def run(
     git: GitRunner,
     vector_store_id_override: str | None = None,
     max_workers: int = DEFAULT_MAX_WORKERS,
+    sweep: bool = True,
 ) -> tuple[int, IngestStats]:
     """Run one ingest cycle. Returns (exit_code, stats)."""
     docs_root = platform_root / DOCS_SUBDIR
@@ -299,11 +306,17 @@ def run(
         slug_for=slug_for,
         source_file_for=source_file_for,
         max_workers=max_workers,
+        sweep=sweep,
     )
     _log_stats(stats)
 
+    # Adopted sections mutate state (new file_ids recorded) exactly like
+    # uploads do; swept orphans intentionally do NOT count — the sweep never
+    # touches state, and counting it would re-stamp last_commit on runs that
+    # changed nothing in the ledger.
     did_real_work = (
         stats.sections_uploaded > 0
+        or stats.sections_adopted > 0
         or stats.sections_deleted > 0
         or stats.files_removed > 0
     )
@@ -486,17 +499,25 @@ def _make_lookups(docs_root: Path) -> tuple[
 def _log_stats(stats: IngestStats) -> None:
     log.info(
         "ingest: seen=%d skipped=%d processed=%d removed=%d "
-        "uploaded=%d deleted=%d errors=%d",
+        "uploaded=%d adopted=%d deleted=%d swept=%d sweep_skipped_recent=%d "
+        "sweep_skipped_no_created_at=%d errors=%d sweep_errors=%d",
         stats.files_seen,
         stats.files_fast_path_skipped,
         stats.files_processed,
         stats.files_removed,
         stats.sections_uploaded,
+        stats.sections_adopted,
         stats.sections_deleted,
+        stats.orphans_swept,
+        stats.sweep_skipped_recent,
+        stats.sweep_skipped_no_created_at,
         len(stats.errors),
+        len(stats.sweep_errors),
     )
     for err in stats.errors:
         log.warning("  ! %s", err)
+    for err in stats.sweep_errors:
+        log.warning("  ~ %s", err)
 
 
 if __name__ == "__main__":

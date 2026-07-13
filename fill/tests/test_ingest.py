@@ -454,6 +454,174 @@ def test_multi_file_independent_processing(docs):
     assert state.files[_src(p2, docs)].indexed_sourceType == "paradigm"
 
 
+# ─── adoption + sweep (orphan handling) ─────────────────────────────────────
+
+
+def _common(docs: Path, paths: list[Path]) -> dict:
+    return dict(
+        files_to_process=paths, files_removed=[],
+        docs_root=docs,
+        source_type_for=lambda _: "language",
+        slug_for=lambda p: p.stem,
+        now=_frozen_clock(),
+    )
+
+
+def test_crash_rerun_adopts_orphans_instead_of_reuploading(docs):
+    """The duplicate-chunk scenario: run 1 uploads, its state is lost (crash
+    before save), run 2 with a fresh State must adopt run 1's files rather
+    than upload byte-identical copies."""
+    p = docs / "AGGR.md"
+    _write_md(p, "AGGR", f"## Syntax\n\n{_LONG_BODY}\n\n## Examples\n\n{_LONG_BODY}\n")
+    client = FakeVectorStoreClient()
+
+    state1 = State()
+    s1 = ingest_files(state1, client, **_common(docs, [p]))
+    assert s1.sections_uploaded == 2
+    ids_run1 = {srec.file_id for srec in state1.files["AGGR.md"].sections.values()}
+    uploads_before = len(client.upload_calls)
+
+    # Run 2: the ledger record of run 1 is gone.
+    state2 = State()
+    s2 = ingest_files(state2, client, **_common(docs, [p]))
+
+    assert s2.sections_uploaded == 0
+    assert s2.sections_adopted == 2
+    assert len(client.upload_calls) == uploads_before  # nothing re-uploaded
+    ids_run2 = {srec.file_id for srec in state2.files["AGGR.md"].sections.values()}
+    assert ids_run2 == ids_run1  # run 1's files adopted, not duplicated
+    assert s2.orphans_swept == 0
+    assert client.file_count == 2  # store still holds exactly one copy each
+
+
+def test_sweep_deletes_old_untracked_files(docs):
+    client = FakeVectorStoreClient()
+    client.preload("fake-orphan", {"whatever": "x"}, created_at=0)
+
+    stats = ingest_files(State(), client, **_common(docs, []))
+
+    assert stats.orphans_swept == 1
+    assert stats.sweep_errors == []
+    assert client.file_count == 0
+
+
+def test_sweep_keeps_files_inside_grace_window(docs):
+    client = FakeVectorStoreClient()
+    client.preload("fake-fresh", {"whatever": "x"}, created_at=1_000_000)
+
+    stats = ingest_files(
+        State(), client, **_common(docs, []),
+        now_ts=lambda: 1_000_100.0,  # 100s later — inside the 3600s grace
+    )
+
+    assert stats.orphans_swept == 0
+    assert stats.sweep_skipped_recent == 1
+    assert client.file_count == 1
+
+
+def test_sweep_never_touches_tracked_files(docs):
+    p = docs / "AGGR.md"
+    _write_md(p, "AGGR", f"## Syntax\n\n{_LONG_BODY}\n")
+    client = FakeVectorStoreClient(clock=lambda: 0)  # uploads look ancient
+    state = State()
+    ingest_files(state, client, **_common(docs, [p]))
+    assert client.file_count == 1
+
+    # No-op re-run far in the future: the tracked (and old) file must survive.
+    stats = ingest_files(state, client, **_common(docs, [p]),
+                         now_ts=lambda: 10_000_000.0)
+
+    assert stats.files_fast_path_skipped == 1
+    assert stats.orphans_swept == 0
+    assert client.file_count == 1
+
+
+def test_sweep_counts_missing_created_at_separately(docs, monkeypatch):
+    """A store that stops reporting created_at must not silently disable the
+    sweep: such files are kept, but under their own counter."""
+    from fill.openai_client import VectorStoreSection
+
+    client = FakeVectorStoreClient()
+    monkeypatch.setattr(client, "list_sections", lambda: [
+        VectorStoreSection(file_id="fake-no-ts", attributes={}, created_at=None),
+    ])
+
+    stats = ingest_files(State(), client, **_common(docs, []))
+
+    assert stats.orphans_swept == 0
+    assert stats.sweep_skipped_no_created_at == 1
+    assert stats.sweep_skipped_recent == 0
+
+
+def test_sweep_delete_failure_is_soft(docs):
+    client = FakeVectorStoreClient()
+    client.preload("fake-orphan", {"whatever": "x"}, created_at=0)
+    client.fail_delete_for_file_id.add("fake-orphan")
+
+    stats = ingest_files(State(), client, **_common(docs, []))
+
+    assert stats.errors == []  # must not fail the run / block stamping
+    assert len(stats.sweep_errors) == 1 and "fake-orphan" in stats.sweep_errors[0]
+    assert client.file_count == 1  # orphan survives until the next run
+
+
+def test_sweep_disabled_leaves_orphans(docs):
+    client = FakeVectorStoreClient()
+    client.preload("fake-orphan", {"whatever": "x"}, created_at=0)
+
+    stats = ingest_files(State(), client, **_common(docs, []), sweep=False)
+
+    assert stats.orphans_swept == 0
+    assert client.file_count == 1
+
+
+def test_adoption_takes_lex_smallest_and_sweeps_the_duplicate(docs):
+    """Two identical untracked copies (the observed literal-duplicate case):
+    one gets adopted (lex-smallest file_id, same tiebreak as reconcile),
+    the other is swept."""
+    p = docs / "AGGR.md"
+    _write_md(p, "AGGR", f"## Syntax\n\n{_LONG_BODY}\n")
+    # Learn the real attributes/content the chunker produces.
+    probe = FakeVectorStoreClient()
+    ingest_files(State(), probe, **_common(docs, [p]))
+    [call] = probe.upload_calls
+    attrs = dict(call["attributes"])
+    content = probe.stored_content(str(call["file_id"]))
+
+    client = FakeVectorStoreClient()
+    client.preload("fake-copy-a", attrs, content=content, created_at=0)
+    client.preload("fake-copy-b", attrs, content=content, created_at=0)
+
+    state = State()
+    stats = ingest_files(state, client, **_common(docs, [p]))
+
+    assert stats.sections_adopted == 1
+    assert stats.sections_uploaded == 0
+    assert stats.orphans_swept == 1
+    [srec] = state.files["AGGR.md"].sections.values()
+    assert srec.file_id == "fake-copy-a"  # lex-smallest wins
+    assert client.file_count == 1  # duplicate gone
+
+
+def test_listing_failure_degrades_to_plain_ingest(docs, monkeypatch):
+    """If list_sections raises, the run still ingests (uploads everything)
+    and records the problem in sweep_errors without failing."""
+    p = docs / "AGGR.md"
+    _write_md(p, "AGGR", f"## Syntax\n\n{_LONG_BODY}\n")
+    client = FakeVectorStoreClient()
+    monkeypatch.setattr(
+        client, "list_sections",
+        lambda: (_ for _ in ()).throw(RuntimeError("listing down")),
+    )
+
+    state = State()
+    stats = ingest_files(state, client, **_common(docs, [p]))
+
+    assert stats.sections_uploaded == 1
+    assert stats.errors == []
+    assert len(stats.sweep_errors) == 1 and "listing down" in stats.sweep_errors[0]
+
+
 # ─── fake client basics ─────────────────────────────────────────────────────
 
 
