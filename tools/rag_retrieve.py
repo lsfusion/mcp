@@ -21,6 +21,7 @@ from settings import (
     SOURCETYPE_DOC_BRIEF,
     SOURCETYPE_DOC_RULES,
     SOURCETYPE,
+    SLUG,
     TOP_K,
     QUERY_LOG_MAX_CHARS,
     ERROR_LOG_MAX_CHARS,
@@ -62,6 +63,18 @@ class _Hit:
     filename: str | None
 
 
+def _filters_for_source(source_type: str) -> dict:
+    """Attribute filter for one branch, minus its top guidance article if any."""
+    branch = {"type": "eq", "key": SOURCETYPE, "value": source_type}
+    top_slug = GUIDANCE_TOP_SLUGS.get(source_type)
+    if top_slug is None:
+        return branch
+    return {
+        "type": "and",
+        "filters": [branch, {"type": "ne", "key": SLUG, "value": top_slug}],
+    }
+
+
 def _vs_search_for_source(query: str, source_type: str, top_k: int) -> List[_Hit]:
     """Search the OpenAI Vector Store for chunks tagged with `sourceType=source_type`.
 
@@ -76,7 +89,7 @@ def _vs_search_for_source(query: str, source_type: str, top_k: int) -> List[_Hit
         vector_store_id=RAG_VECTOR_STORE_ID,
         query=query,
         max_num_results=top_k,
-        filters={"type": "eq", "key": SOURCETYPE, "value": source_type},
+        filters=_filters_for_source(source_type),
         rewrite_query=False,
     )
     combined = f"{SOURCETYPE_DOCUMENTATION}-{source_type}"
@@ -101,14 +114,19 @@ ALLOWED_TYPES = (
     SOURCETYPE_DOCUMENTATION_RULES,
 )
 
-# Branches whose FULL text get_guidance / the MCP handshake already delivers.
-# Excluded from the default search: the per-branch quota was forcing their
-# low-relevance chunks into every response, duplicating what the assistant has
-# in context. An explicit `type="brief"` / `type="rules"` still searches them.
-GUIDANCE_TYPES = (SOURCETYPE_DOCUMENTATION_BRIEF, SOURCETYPE_DOCUMENTATION_RULES)
+# The one TOP article of each guidance branch, by slug. `get_guidance` already
+# serves these two pages in FULL, so their chunks are always in the assistant's
+# context — retrieving them again just spends the per-branch quota on text it
+# already has. Only these slugs are excluded; the rest of `brief/` and `rules/`
+# holds the detailed per-area articles, which exist precisely to be retrieved
+# and are searched like any other branch, `type` given or not.
+GUIDANCE_TOP_SLUGS = {
+    SOURCETYPE_DOCUMENTATION_BRIEF: "Brief",
+    SOURCETYPE_DOCUMENTATION_RULES: "Rules",
+}
 
 # Branches searched when `type` is omitted.
-DEFAULT_TYPES = tuple(t for t in ALLOWED_TYPES if t not in GUIDANCE_TYPES)
+DEFAULT_TYPES = ALLOWED_TYPES
 
 # `type` argument → (bare sourceType filter, TOP_K key)
 _TYPE_TO_TOP_K = {
@@ -125,11 +143,14 @@ def retrieve_docs_tool(query: str, type: str | None = None) -> RetrieveDocsOutpu
     `ragIngestDocs` Jenkins pipeline.
 
     `type` filters by chunk sourceType (the docs folder):
-      * omitted / null — search language, paradigm and how-to with a
-        per-branch quota and merge results by score. `brief` and `rules` are
-        not searched by default (see GUIDANCE_TYPES).
+      * omitted / null — search all branches (language, paradigm, how-to, brief,
+        rules) with a per-branch quota and merge results by score.
       * one of `language` / `paradigm` / `how-to` / `brief` / `rules` — only that
         branch.
+
+    The top article of each guidance branch (`Brief`, `Rules`) is never
+    returned — `get_guidance` already delivers it in full (see
+    GUIDANCE_TOP_SLUGS).
 
     The store only holds English (`docs/en/`) content. Cross-lingual
     embeddings make non-English queries work, but English wording is

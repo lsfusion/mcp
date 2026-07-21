@@ -33,17 +33,36 @@ def test_allowed_types_are_the_five_branches():
     assert set(rr.ALLOWED_TYPES) == {"language", "paradigm", "how-to", "brief", "rules"}
 
 
-def test_omitted_type_searches_default_branches_without_guidance_types(monkeypatch):
+def test_omitted_type_searches_every_branch(monkeypatch):
     seen = _record_branches(monkeypatch)
     rr.retrieve_docs_tool("anything")
-    assert set(seen) == {"language", "paradigm", "how-to"}
-    assert len(seen) == 3
+    assert set(seen) == {"language", "paradigm", "how-to", "brief", "rules"}
+    assert len(seen) == 5
 
 
-def test_default_types_is_allowed_types_minus_guidance_types():
-    # brief + rules ship in full via get_guidance — chunks only on explicit type.
-    assert set(rr.GUIDANCE_TYPES) == {"brief", "rules"}
-    assert set(rr.DEFAULT_TYPES) == set(rr.ALLOWED_TYPES) - set(rr.GUIDANCE_TYPES)
+def test_default_types_is_allowed_types():
+    assert set(rr.DEFAULT_TYPES) == set(rr.ALLOWED_TYPES)
+
+
+def test_guidance_branches_exclude_only_their_top_article():
+    # get_guidance ships Brief.md / Rules.md in full; the detailed per-area
+    # articles in the same folders must stay searchable.
+    assert rr.GUIDANCE_TOP_SLUGS == {"brief": "Brief", "rules": "Rules"}
+    for branch, top_slug in rr.GUIDANCE_TOP_SLUGS.items():
+        assert rr._filters_for_source(branch) == {
+            "type": "and",
+            "filters": [
+                {"type": "eq", "key": "sourceType", "value": branch},
+                {"type": "ne", "key": "slug", "value": top_slug},
+            ],
+        }
+
+
+def test_non_guidance_branches_filter_by_source_type_only():
+    for branch in ("language", "paradigm", "how-to"):
+        assert rr._filters_for_source(branch) == {
+            "type": "eq", "key": "sourceType", "value": branch,
+        }
 
 
 def test_specific_type_searches_only_that_branch(monkeypatch):

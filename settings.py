@@ -15,6 +15,11 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 # fill/ingest.py:_section_attributes).
 SOURCETYPE = "sourceType"
 
+# Attribute key under which the article slug is stored on each VS file (the
+# article's published slug, e.g. "Brief" / "Rules_export"; see
+# fill/ingest.py:_section_attributes).
+SLUG = "slug"
+
 # Bare category values (the docs/<lang> folder names) exposed by the chunker on
 # VS file attributes.
 SOURCETYPE_DOCUMENTATION = "documentation"
