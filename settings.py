@@ -62,12 +62,16 @@ TOP_K = {
 # area. Raising it in TOP_K instead would apply to the untyped search too, and
 # drag 5 rules chunks into every generic result at the expense of the other
 # four branches — hence the separate table.
+# Sized against the corpus, not guessed: a typed lookup should be able to bring
+# back a whole per-area article, and the biggest ones are 8 sections (rules) and
+# 5 (brief). A quota below that guarantees the article arrives incomplete, and
+# which part goes missing is decided by the embedding.
 TYPED_TOP_K = {
     SOURCETYPE_DOC_PARADIGM: 3,
     SOURCETYPE_DOC_LANGUAGE: 3,
     SOURCETYPE_DOC_HOWTO: 3,
-    SOURCETYPE_DOC_BRIEF: 3,
-    SOURCETYPE_DOC_RULES: 5,
+    SOURCETYPE_DOC_BRIEF: 5,
+    SOURCETYPE_DOC_RULES: 8,
 }
 
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===

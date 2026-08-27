@@ -232,11 +232,12 @@ def test_exclude_ids_is_passed_to_every_branch(monkeypatch):
 # --- quotas ----------------------------------------------------------------
 
 
-def test_typed_rules_requests_five_others_three(monkeypatch):
+def test_typed_quota_is_per_branch(monkeypatch):
+    expected = {"rules": 8, "brief": 5}
     for t in rr.ALLOWED_TYPES:
         calls = _record_calls(monkeypatch)
         rr.retrieve_docs_tool("q", type=t)
-        assert calls[0]["top_k"] == (5 if t == "rules" else 3)
+        assert calls[0]["top_k"] == expected.get(t, 3)
 
 
 def test_untyped_search_requests_three_per_branch(monkeypatch):
@@ -246,12 +247,17 @@ def test_untyped_search_requests_three_per_branch(monkeypatch):
     assert {c["source_type"] for c in calls} == set(rr.ALLOWED_TYPES)
 
 
-def test_default_quota_table_is_uniform():
+def test_typed_quotas_can_return_a_whole_area_article():
+    # The default table stays uniform; the typed one is sized against the corpus
+    # so that asking for one area brings back all of its sections rather than a
+    # majority of them chosen by the embedding.
     from settings import TOP_K, TYPED_TOP_K
     assert set(TOP_K.values()) == {3}
-    assert TYPED_TOP_K["documentation-rules"] == 5
-    assert {k: v for k, v in TYPED_TOP_K.items() if k != "documentation-rules"} == {
-        k: 3 for k in TOP_K if k != "documentation-rules"
+    assert TYPED_TOP_K["documentation-rules"] == 8
+    assert TYPED_TOP_K["documentation-brief"] == 5
+    assert {k: v for k, v in TYPED_TOP_K.items()
+            if k not in ("documentation-rules", "documentation-brief")} == {
+        k: 3 for k in TOP_K if k not in ("documentation-rules", "documentation-brief")
     }
 
 
@@ -294,7 +300,7 @@ def test_logged_n_requested_follows_the_quota_actually_used(monkeypatch):
     calls = _capture_emit(monkeypatch)
 
     rr.retrieve_docs_tool("q", type="rules")
-    assert calls[-1]["fields"]["n_requested"] == 5  # typed rules quota, not 3
+    assert calls[-1]["fields"]["n_requested"] == 8  # typed rules quota, not 3
 
     rr.retrieve_docs_tool("q", type="how-to")
     assert calls[-1]["fields"]["n_requested"] == 3
