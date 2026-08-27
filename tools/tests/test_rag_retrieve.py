@@ -141,22 +141,21 @@ def test_hit_id_comes_from_section_id_attribute(monkeypatch):
     assert hits[0].file_id == "vs_file_9" and hits[0].id != hits[0].file_id
 
 
-def test_missing_section_id_raises(monkeypatch):
-    _patch_vs_search(monkeypatch, _FakeResp([_FakeVSHit({"slug": "AGGR"})]))
-    with pytest.raises(ValueError, match="section_id"):
-        rr._vs_search_for_source("q", "how-to", 3)
-
-
-def test_empty_section_id_raises(monkeypatch):
-    _patch_vs_search(monkeypatch, _FakeResp([_FakeVSHit({"section_id": ""})]))
-    with pytest.raises(ValueError, match="section_id"):
-        rr._vs_search_for_source("q", "how-to", 3)
-
-
-def test_no_attributes_at_all_raises(monkeypatch):
-    _patch_vs_search(monkeypatch, _FakeResp([_FakeVSHit(None)]))
-    with pytest.raises(ValueError, match="section_id"):
-        rr._vs_search_for_source("q", "how-to", 3)
+@pytest.mark.parametrize("attrs", [
+    {"slug": "AGGR"},          # attribute absent
+    {"section_id": ""},        # attribute present but empty
+    None,                      # no attributes at all
+])
+def test_hit_without_a_section_id_is_dropped_not_fatal(monkeypatch, caplog, attrs):
+    # The store is external and mutable: a foreign or stale file has no
+    # section_id. Dropping that one hit keeps the other branches' results,
+    # which failing the whole call would throw away.
+    good = _FakeVSHit({"section_id": "AGGR::syntax"})
+    _patch_vs_search(monkeypatch, _FakeResp([_FakeVSHit(attrs), good]))
+    with caplog.at_level("WARNING"):
+        hits = rr._vs_search_for_source("q", "how-to", 3)
+    assert [h.id for h in hits] == ["AGGR::syntax"]
+    assert "section_id" in caplog.text
 
 
 def test_doc_item_carries_the_id(monkeypatch):
@@ -379,3 +378,26 @@ def test_error_message_is_capped(monkeypatch):
     with pytest.raises(RuntimeError):
         rr.retrieve_docs_tool("q", type="how-to")
     assert len(calls[0]["fields"]["error_message"]) == 5
+
+
+def test_error_message_never_leaks_excluded_ids(monkeypatch):
+    # A provider error can echo the request back, filter values included. The
+    # log has no field naming the excluded ids on purpose; the error string
+    # must not become one through the back door.
+    records: list[dict] = []
+    monkeypatch.setattr(rr, "emit", lambda name, fields, **kw: records.append(fields))
+
+    def boom(*a, **kw):
+        raise RuntimeError("400 bad filter: {'nin': ['AGGR::syntax', 'GROUP::examples']}")
+
+    monkeypatch.setattr(rr, "_vs_search_for_source", boom)
+    with pytest.raises(RuntimeError):
+        rr.retrieve_docs_tool("q", type="how-to",
+                              exclude_ids=["AGGR::syntax", "GROUP::examples"])
+
+    assert len(records) == 1
+    blob = str(records[0])
+    assert "AGGR::syntax" not in blob
+    assert "GROUP::examples" not in blob
+    assert "<excluded-id>" in records[0]["error_message"]
+    assert records[0]["n_excluded"] == 2

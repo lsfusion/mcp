@@ -72,7 +72,7 @@ TYPED_TOP_K = {
 
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===
 # Bump when the log envelope/record shape changes.
-LOG_SCHEMA_VERSION = 1
+LOG_SCHEMA_VERSION = 2
 # Stamped into every event so analytics can attribute records to a build. Ops
 # should set this (image digest / git sha) in the deployment env.
 SERVER_VERSION = os.environ.get("MCP_SERVER_VERSION", "unknown")

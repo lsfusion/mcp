@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import time
 from dataclasses import dataclass
 from typing import List
@@ -46,6 +47,8 @@ class RetrieveDocsOutput(BaseModel):
         description="Relevant chunks returned from the RAG store."
     )
 
+
+log = logging.getLogger("rag_retrieve")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -123,14 +126,17 @@ def _vs_search_for_source(
         section_id = attributes.get(SECTION_ID)
         if not section_id:
             # The ingest pipeline stamps `section_id` on EVERY uploaded file
-            # (fill/ingest.py:_section_attributes), so a hit without one means
-            # the index holds foreign/stale files. Fail loudly instead of
-            # serving a chunk that cannot be identified or excluded later.
-            raise ValueError(
-                f"vector store chunk without a '{SECTION_ID}' attribute "
-                f"(file_id={getattr(hit, 'file_id', None)!r}, "
-                f"filename={getattr(hit, 'filename', None)!r}) — corrupted index, re-run ragIngestDocs"
+            # (fill/ingest.py:_section_attributes), so a hit without one is a
+            # foreign or stale file in a store we do not exclusively own. Drop
+            # that one hit — it cannot be identified or excluded later anyway —
+            # and keep serving the rest: one bad row must not fail a search that
+            # has already spent five branch queries.
+            log.warning(
+                "retrieve_docs: dropping vector store hit without a %r attribute "
+                "(file_id=%r, filename=%r) — stale or foreign file, re-run ragIngestDocs",
+                SECTION_ID, getattr(hit, "file_id", None), getattr(hit, "filename", None),
             )
+            continue
         hits.append(_Hit(
             id=str(section_id),
             source=combined,
@@ -234,6 +240,15 @@ def retrieve_docs_tool(
     )
 
 
+def _redact_ids(message: str, ids: list[str] | None) -> str:
+    """Replace any caller-supplied chunk id occurring in `message`. Longest
+    first, so an id that contains another is not left half-substituted."""
+    for i in sorted(ids or [], key=len, reverse=True):
+        if i:
+            message = message.replace(i, "<excluded-id>")
+    return message
+
+
 def _log_retrieval(
     query: str,
     type_arg: str | None,
@@ -251,9 +266,11 @@ def _log_retrieval(
         fields: dict = {
             "query": (query or "")[:QUERY_LOG_MAX_CHARS],
             "type": type_arg,
-            # Total chunk budget actually requested across the searched branches
-            # (computed by the caller from the quota table that call used), NOT
-            # the branch count — e.g. 15 when type is omitted.
+            # Chunk BUDGET for this call: the sum of the quota table the call
+            # used, across the branches it set out to search — NOT the branch
+            # count (e.g. 15 when type is omitted), and NOT a count of searches
+            # that completed. On the error path some of those searches may never
+            # have run.
             "n_requested": n_requested,
             # Count only: the ids are caller-supplied chunk ids, and the log
             # keeps no chunk identity the caller did not get from us anyway.
@@ -274,7 +291,10 @@ def _log_retrieval(
         }
         if not ok and error is not None:
             fields["error_class"] = type(error).__name__
-            fields["error_message"] = str(error)[:ERROR_LOG_MAX_CHARS]
+            # A provider error can echo the request back, filter values and all,
+            # which would smuggle the caller's excluded ids into the log through
+            # a field that never names them. Scrub them before truncating.
+            fields["error_message"] = _redact_ids(str(error), exclude_ids)[:ERROR_LOG_MAX_CHARS]
         emit("retrieve_docs", fields, stream="retrieval", ok=ok)
     except Exception:  # noqa: BLE001 — best-effort; never propagate into retrieve_docs
         pass

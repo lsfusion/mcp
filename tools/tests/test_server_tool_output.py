@@ -65,3 +65,15 @@ def test_retrieve_docs_keeps_its_structured_schema(mcp_server):
     # schema is intentional and must not be collaterally stripped.
     schema = _tool(mcp_server, "lsfusion_retrieve_docs").outputSchema
     assert schema and "docs" in schema["properties"]
+
+
+def test_retrieve_docs_publishes_the_id_and_exclude_ids_contract(mcp_server):
+    # `id` out and `exclude_ids` in are the whole point of the follow-up lookup:
+    # if either falls out of the published schema, callers cannot use it and the
+    # hand-mirrored proxies have nothing to mirror.
+    tool = _tool(mcp_server, "lsfusion_retrieve_docs")
+    assert "exclude_ids" in tool.inputSchema["properties"]
+
+    defs = tool.outputSchema.get("$defs", {})
+    doc_item = defs.get("DocItem") or {}
+    assert "id" in doc_item.get("properties", {}), tool.outputSchema
