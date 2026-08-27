@@ -57,21 +57,22 @@ TOP_K = {
 
 # Per-sourceType chunk budget used ONLY when `type` is passed explicitly, i.e.
 # when the whole response comes from that single branch.
-# `rules` gets 5 instead of 3: once the rules branch is split into per-area
-# articles, one targeted `type="rules"` query needs a bigger slice to cover the
-# area. Raising it in TOP_K instead would apply to the untyped search too, and
-# drag 5 rules chunks into every generic result at the expense of the other
-# four branches — hence the separate table.
+# `rules` and `brief` get more than the other branches: they are split into
+# per-area articles, and one targeted query is meant to cover the area. Raising
+# it in TOP_K instead would apply to the untyped search too, and drag those
+# chunks into every generic result at the expense of the other branches — hence
+# the separate table.
 # Sized against the corpus, not guessed: a typed lookup should be able to bring
-# back a whole per-area article, and the biggest ones are 8 sections (rules) and
-# 5 (brief). A quota below that guarantees the article arrives incomplete, and
-# which part goes missing is decided by the embedding.
+# back a whole per-area article. Measured on the current corpus the biggest are
+# 7 sections (brief) and 6 (rules); the quota is set one above each, so a normal
+# amount of growth does not silently start truncating. A quota below the article
+# guarantees it arrives incomplete, with the embedding choosing what is missing.
 TYPED_TOP_K = {
     SOURCETYPE_DOC_PARADIGM: 3,
     SOURCETYPE_DOC_LANGUAGE: 3,
     SOURCETYPE_DOC_HOWTO: 3,
-    SOURCETYPE_DOC_BRIEF: 5,
-    SOURCETYPE_DOC_RULES: 8,
+    SOURCETYPE_DOC_BRIEF: 8,
+    SOURCETYPE_DOC_RULES: 7,
 }
 
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===

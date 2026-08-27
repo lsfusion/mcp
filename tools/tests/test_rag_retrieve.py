@@ -233,7 +233,7 @@ def test_exclude_ids_is_passed_to_every_branch(monkeypatch):
 
 
 def test_typed_quota_is_per_branch(monkeypatch):
-    expected = {"rules": 8, "brief": 5}
+    expected = {"rules": 7, "brief": 8}
     for t in rr.ALLOWED_TYPES:
         calls = _record_calls(monkeypatch)
         rr.retrieve_docs_tool("q", type=t)
@@ -253,8 +253,8 @@ def test_typed_quotas_can_return_a_whole_area_article():
     # majority of them chosen by the embedding.
     from settings import TOP_K, TYPED_TOP_K
     assert set(TOP_K.values()) == {3}
-    assert TYPED_TOP_K["documentation-rules"] == 8
-    assert TYPED_TOP_K["documentation-brief"] == 5
+    assert TYPED_TOP_K["documentation-rules"] == 7
+    assert TYPED_TOP_K["documentation-brief"] == 8
     assert {k: v for k, v in TYPED_TOP_K.items()
             if k not in ("documentation-rules", "documentation-brief")} == {
         k: 3 for k in TOP_K if k not in ("documentation-rules", "documentation-brief")
@@ -300,7 +300,7 @@ def test_logged_n_requested_follows_the_quota_actually_used(monkeypatch):
     calls = _capture_emit(monkeypatch)
 
     rr.retrieve_docs_tool("q", type="rules")
-    assert calls[-1]["fields"]["n_requested"] == 8  # typed rules quota, not 3
+    assert calls[-1]["fields"]["n_requested"] == 7  # typed rules quota, not 3
 
     rr.retrieve_docs_tool("q", type="how-to")
     assert calls[-1]["fields"]["n_requested"] == 3
