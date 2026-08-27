@@ -1,7 +1,8 @@
-"""Drift guard: the hand-mirrored `lsfusion_report_feedback` schema in the two
-proxy layers (platform `MCPDispatcher.java`, plugin `McpBaseService.java` +
-`McpToolset.kt`) must stay in sync with the central source-of-truth schema
-(mcp/tools/feedback.py).
+"""Drift guard: the hand-mirrored `lsfusion_report_feedback` and
+`lsfusion_retrieve_docs` schemas in the two proxy layers (platform
+`MCPDispatcher.java`, plugin `McpBaseService.java` + `McpToolset.kt`) must stay
+in sync with the central source-of-truth schemas (mcp/tools/feedback.py,
+mcp/tools/rag_retrieve.py).
 
 The central Pydantic models are authoritative. For each proxy we slice the
 region that declares the tool, tokenize it, and assert every central field name
@@ -11,22 +12,29 @@ actually bites). Reverse drift (proxy keeps a field central dropped) is not
 checked here.
 
 Runs only in the aggregate super-workspace where the sibling repos exist; a
-standalone mcp checkout skips it.
+standalone mcp checkout skips it. The sibling roots can be redirected with
+`LSF_PLATFORM_ROOT` / `LSF_PLUGIN_ROOT`, so the guard can be pointed at the
+worktree that actually carries a mirroring change instead of whatever branch
+the workspace checkout happens to be on.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 
 import pytest
 
 from tools.feedback import FeedbackOutput, FeedbackReport
+from tools.rag_retrieve import RetrieveDocsOutput
 
 # tools/tests/ -> tools -> mcp -> <aggregate>
 _AGG = pathlib.Path(__file__).resolve().parents[3]
-PLATFORM = _AGG / "platform/server/src/main/java/lsfusion/server/physics/admin/mcp/MCPDispatcher.java"
-PLUGIN_JAVA = _AGG / "plugin-idea/src/com/lsfusion/mcp/McpBaseService.java"
-PLUGIN_KT = _AGG / "plugin-idea/src/com/lsfusion/mcp/McpToolset.kt"
+_PLATFORM_ROOT = pathlib.Path(os.environ.get("LSF_PLATFORM_ROOT", _AGG / "platform"))
+_PLUGIN_ROOT = pathlib.Path(os.environ.get("LSF_PLUGIN_ROOT", _AGG / "plugin-idea"))
+PLATFORM = _PLATFORM_ROOT / "server/src/main/java/lsfusion/server/physics/admin/mcp/MCPDispatcher.java"
+PLUGIN_JAVA = _PLUGIN_ROOT / "src/com/lsfusion/mcp/McpBaseService.java"
+PLUGIN_KT = _PLUGIN_ROOT / "src/com/lsfusion/mcp/McpToolset.kt"
 
 _IDENT = re.compile(r"[a-z][a-z0-9_-]*")
 
@@ -114,3 +122,43 @@ def test_central_contract_is_nonempty_guard():
     assert {"signal_type", "problem_summary", "recommendation", "agent_journey_id"} <= IN_FIELDS
     assert {"doc-gap", "eval-error-message", "expectation-mismatch"} <= IN_ENUMS
     assert {"report_id", "status"} <= OUT_FIELDS
+
+
+# --- retrieve_docs ---------------------------------------------------------
+#
+# The input side has no Pydantic model — the signature IS the contract — so the
+# names are spelled out here. `id` and `exclude_ids` are the ones that matter:
+# a proxy that forgets `exclude_ids` cannot pass it at all (both descriptors set
+# `additionalProperties: false`), and one that forgets `id` drops it silently on
+# the way back, which is worse than failing.
+RETRIEVE_IN_FIELDS = {"query", "type", "exclude_ids"}
+RETRIEVE_OUT_FIELDS, RETRIEVE_OUT_ENUMS = _contract(RetrieveDocsOutput)
+
+
+def test_platform_retrieve_descriptor_covers_central_input():
+    text = _need(PLATFORM)
+    region = _brace_slice(text, "JSONObject retrieveDocsDescriptor(")
+    _assert_covers(_tokens(region), RETRIEVE_IN_FIELDS, set(), "platform MCPDispatcher (retrieve_docs)")
+
+
+def test_plugin_java_retrieve_descriptor_covers_central_input_and_output():
+    text = _need(PLUGIN_JAVA)
+    region = _brace_slice(text, "JSONObject buildRetrieveDocsToolDescriptor(")
+    _assert_covers(_tokens(region), RETRIEVE_IN_FIELDS | RETRIEVE_OUT_FIELDS,
+                   RETRIEVE_OUT_ENUMS, "plugin McpBaseService (retrieve_docs)")
+
+
+def test_plugin_kotlin_retrieve_dtos_cover_central_output():
+    text = _need(PLUGIN_KT)
+    region = text[text.index("data class RemoteDocItem"):text.index("// report_feedback DTOs")]
+    _assert_covers(_tokens(region), RETRIEVE_OUT_FIELDS, RETRIEVE_OUT_ENUMS,
+                   "plugin McpToolset (retrieve_docs DTOs)")
+
+
+def test_plugin_kotlin_wrapper_forwards_the_exclusion_list():
+    # The DTO block above cannot see the call site: the Kotlin wrapper has to
+    # both accept the parameter and put it on the wire under its snake_case name.
+    text = _need(PLUGIN_KT)
+    region = _brace_slice(text, "suspend fun retrieveDocs(")
+    assert "excludeIds" in region, "plugin McpToolset: retrieveDocs takes no exclusion list"
+    assert '"exclude_ids"' in region, "plugin McpToolset: exclusion list never reaches the wire"
