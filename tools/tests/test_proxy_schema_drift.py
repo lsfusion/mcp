@@ -19,6 +19,7 @@ the workspace checkout happens to be on.
 """
 from __future__ import annotations
 
+import inspect
 import os
 import pathlib
 import re
@@ -26,10 +27,11 @@ import re
 import pytest
 
 from tools.feedback import FeedbackOutput, FeedbackReport
-from tools.rag_retrieve import RetrieveDocsOutput
+from tools.rag_retrieve import RetrieveDocsOutput, retrieve_docs_tool
 
 # tools/tests/ -> tools -> mcp -> <aggregate>
 _AGG = pathlib.Path(__file__).resolve().parents[3]
+_ROOTS_OVERRIDDEN = bool(os.environ.get("LSF_PLATFORM_ROOT") or os.environ.get("LSF_PLUGIN_ROOT"))
 _PLATFORM_ROOT = pathlib.Path(os.environ.get("LSF_PLATFORM_ROOT", _AGG / "platform"))
 _PLUGIN_ROOT = pathlib.Path(os.environ.get("LSF_PLUGIN_ROOT", _AGG / "plugin-idea"))
 PLATFORM = _PLATFORM_ROOT / "server/src/main/java/lsfusion/server/physics/admin/mcp/MCPDispatcher.java"
@@ -80,6 +82,16 @@ def _tokens(region: str) -> set[str]:
     return set(_IDENT.findall(region))
 
 
+def _assert_declares(region: str, keys: set[str], who: str, *, kotlin: bool = False):
+    """Token coverage alone is too weak: a name mentioned only in a comment or a
+    description string counts. Require each key to appear where a key is
+    actually declared — `.put("<key>"` in the JSONObject builders, `val <key>`
+    in the Kotlin DTO."""
+    missing = sorted(k for k in keys
+                     if (f"val {k}" if kotlin else f'.put("{k}"') not in region)
+    assert not missing, f"{who}: names present but never declared as fields: {missing}"
+
+
 def _assert_covers(region_tokens: set[str], fields: set[str], enums: set[str], who: str):
     missing_f = sorted(fields - region_tokens)
     missing_e = sorted(enums - region_tokens)
@@ -89,6 +101,10 @@ def _assert_covers(region_tokens: set[str], fields: set[str], enums: set[str], w
 
 def _need(path: pathlib.Path):
     if not path.exists():
+        # An explicitly pointed root that does not exist is a typo, not an
+        # absent sibling: skipping it would turn the whole guard green.
+        if _ROOTS_OVERRIDDEN:
+            raise AssertionError(f"root was set explicitly but file is missing: {path}")
         pytest.skip(f"sibling repo file not present: {path}")
     return path.read_text(encoding="utf-8")
 
@@ -126,33 +142,39 @@ def test_central_contract_is_nonempty_guard():
 
 # --- retrieve_docs ---------------------------------------------------------
 #
-# The input side has no Pydantic model — the signature IS the contract — so the
-# names are spelled out here. `id` and `exclude_ids` are the ones that matter:
+# The input side has no Pydantic model — the signature IS the contract, so read
+# it, rather than restating it here where it would silently stop tracking.
+# `id` and `exclude_ids` are the ones that matter:
 # a proxy that forgets `exclude_ids` cannot pass it at all (both descriptors set
 # `additionalProperties: false`), and one that forgets `id` drops it silently on
 # the way back, which is worse than failing.
-RETRIEVE_IN_FIELDS = {"query", "type", "exclude_ids"}
+RETRIEVE_IN_FIELDS = set(inspect.signature(retrieve_docs_tool).parameters)
 RETRIEVE_OUT_FIELDS, RETRIEVE_OUT_ENUMS = _contract(RetrieveDocsOutput)
 
 
 def test_platform_retrieve_descriptor_covers_central_input():
     text = _need(PLATFORM)
     region = _brace_slice(text, "JSONObject retrieveDocsDescriptor(")
-    _assert_covers(_tokens(region), RETRIEVE_IN_FIELDS, set(), "platform MCPDispatcher (retrieve_docs)")
+    who = "platform MCPDispatcher (retrieve_docs)"
+    _assert_covers(_tokens(region), RETRIEVE_IN_FIELDS, set(), who)
+    _assert_declares(region, RETRIEVE_IN_FIELDS, who)
 
 
 def test_plugin_java_retrieve_descriptor_covers_central_input_and_output():
     text = _need(PLUGIN_JAVA)
     region = _brace_slice(text, "JSONObject buildRetrieveDocsToolDescriptor(")
+    who = "plugin McpBaseService (retrieve_docs)"
     _assert_covers(_tokens(region), RETRIEVE_IN_FIELDS | RETRIEVE_OUT_FIELDS,
-                   RETRIEVE_OUT_ENUMS, "plugin McpBaseService (retrieve_docs)")
+                   RETRIEVE_OUT_ENUMS, who)
+    _assert_declares(region, RETRIEVE_IN_FIELDS | RETRIEVE_OUT_FIELDS, who)
 
 
 def test_plugin_kotlin_retrieve_dtos_cover_central_output():
     text = _need(PLUGIN_KT)
     region = text[text.index("data class RemoteDocItem"):text.index("// report_feedback DTOs")]
-    _assert_covers(_tokens(region), RETRIEVE_OUT_FIELDS, RETRIEVE_OUT_ENUMS,
-                   "plugin McpToolset (retrieve_docs DTOs)")
+    who = "plugin McpToolset (retrieve_docs DTOs)"
+    _assert_covers(_tokens(region), RETRIEVE_OUT_FIELDS, RETRIEVE_OUT_ENUMS, who)
+    _assert_declares(region, RETRIEVE_OUT_FIELDS, who, kotlin=True)
 
 
 def test_plugin_kotlin_wrapper_forwards_the_exclusion_list():
