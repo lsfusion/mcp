@@ -102,3 +102,23 @@ def test_server_instructions_point_to_the_tool_and_never_claim_in_context():
     assert "already in context" not in lowered
     assert "do not need to call" not in lowered
     assert "not included here" in lowered
+
+
+def test_notice_does_not_claim_completeness_or_flatten_rule_strength():
+    # Two regressions this guards, both of which the notice used to carry:
+    #   1. "the COMPLETE lsFusion brief and rules" — false once the per-area
+    #      rules live in their own articles that get_guidance does not fetch.
+    #   2. "the rules it omits are mandatory" / "strictly follow every rule" —
+    #      the guidance contains both MUST and SHOULD, and levelling them
+    #      silently promotes every SHOULD to a binding requirement.
+    lowered = g.GUIDANCE_NOTICE.lower()
+    assert "complete lsfusion brief and rules" not in lowered
+    assert "strictly follow" not in lowered
+    assert "lsfusion_retrieve_docs" in g.GUIDANCE_NOTICE
+    assert "should" in lowered and "must" in lowered
+
+
+def test_server_instructions_do_not_flatten_rule_strength():
+    lowered = g.SERVER_INSTRUCTIONS.lower()
+    assert "strictly follow" not in lowered
+    assert "stated strength" in lowered

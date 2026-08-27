@@ -61,6 +61,20 @@ _TRANSIENT_FAILURE_CODES = frozenset({"server_error", "internal_error"})
 # per section: 1+2+4+8+16 = 31s.
 _DEFAULT_ATTACH_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0)
 
+# Chunking strategy sent with EVERY VS attach. Must be explicit: when
+# `chunking_strategy` is omitted, OpenAI applies `auto`, which is static
+# with max_chunk_size_tokens=800 / chunk_overlap_tokens=400. That silently
+# breaks the one-section-one-chunk invariant `fill.chunker` is built around
+# (sections are sized to fit in a single 4096-token chunk) — each section
+# would be re-split into ~800-token windows with 50% overlap, flooding
+# retrieval with near-duplicate chunks of the same section. 4096 is the
+# max_chunk_size_tokens ceiling; overlap 0 because our sections are already
+# semantically self-contained and any overlap here only duplicates content.
+_CHUNKING_STRATEGY: dict[str, Any] = {
+    "type": "static",
+    "static": {"max_chunk_size_tokens": 4096, "chunk_overlap_tokens": 0},
+}
+
 
 class OpenAIVectorStoreClient:
     """Production `VectorStoreClient` against the OpenAI SDK.
@@ -246,6 +260,7 @@ class OpenAIVectorStoreClient:
                     vector_store_id=self._vs_id,
                     file_id=file_id,
                     attributes=attributes,
+                    chunking_strategy=_CHUNKING_STRATEGY,
                     poll_interval_ms=self._poll_interval_ms,
                 )
             except Exception as e:

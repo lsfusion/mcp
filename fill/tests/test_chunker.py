@@ -676,12 +676,13 @@ def test_merged_section_id_cannot_collide_with_kebab(tmp_path):
         assert "." not in last
 
 
-def test_chunker_version_pinned_at_v3():
-    """The undersized-run merge + stub-detection behaviors are on the
-    v3 boundary. Bumping CHUNKER_VERSION re-triggers a forced-full-scan
-    via state sentinel drift (covered end-to-end in
-    test_state.test_needs_forced_full_scan_on_version_drift)."""
-    assert CHUNKER_VERSION == "v3"
+def test_chunker_version_pinned_at_v4():
+    """v4 = the explicit static 4096/0 chunking strategy at attach time
+    (v3 = undersized-run merge + stub detection). Bumping CHUNKER_VERSION
+    re-triggers a forced-full-scan via state sentinel drift (covered
+    end-to-end in test_state.test_needs_forced_full_scan_on_version_drift)
+    and, because it feeds section_payload_hash, a full re-upload."""
+    assert CHUNKER_VERSION == "v4"
 
 
 def test_under_development_stub_emits_no_sections(tmp_path):

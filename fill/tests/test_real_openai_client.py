@@ -205,8 +205,32 @@ def test_upload_section_two_step_calls():
         "vector_store_id": "vs_xxx",
         "file_id": "file-000",
         "attributes": {"section_id": "AGGR::syntax", "slug": "AGGR"},
+        "chunking_strategy": {
+            "type": "static",
+            "static": {"max_chunk_size_tokens": 4096, "chunk_overlap_tokens": 0},
+        },
         "poll_interval_ms": 1000,
     }]
+
+
+def test_upload_section_requests_explicit_static_chunking_strategy():
+    """The attach MUST pin chunking_strategy to static 4096 / overlap 0.
+
+    Omitting it makes OpenAI apply `auto` = static 800/400, which re-splits
+    every section into 50%-overlapping near-duplicate chunks and breaks the
+    one-section-one-chunk invariant `fill.chunker` is built around. Pinned
+    here because the failure is silent — indexing still "succeeds".
+    """
+    mock = MockOpenAI()
+    c = OpenAIVectorStoreClient("vs_xxx", client=mock)
+
+    c.upload_section(content="x", filename="x.md", attributes={"section_id": "s"})
+
+    call = mock.vector_stores.files.create_and_poll_calls[0]
+    assert call["chunking_strategy"] == {
+        "type": "static",
+        "static": {"max_chunk_size_tokens": 4096, "chunk_overlap_tokens": 0},
+    }
 
 
 def test_upload_section_attach_failure_deletes_orphan():

@@ -11,14 +11,20 @@ Implements RAG-PLAN.md §"Chunking algorithm":
   - Oversized parts are passed through a token-aware recursive splitter and
     become `{section_id}::part-NN` sub-sections (overlap preserved).
   - Deterministic prefix `# {sourceType}: {heading_path}\n\n{content}` is
-    prepended; full payload feeds OpenAI's chunking_strategy with
-    `max_chunk_size_tokens=4096`.
+    prepended; the full payload is uploaded under an explicitly requested
+    chunking_strategy of static `max_chunk_size_tokens=4096`,
+    `chunk_overlap_tokens=0`.
   - section_payload_hash = sha256(JSON{content, sourceType, heading_path,
     chunker_version, glossary_version, prefix_version, source_url_version}).
 
-One-section-one-chunk invariant: with MAX_SECTION_TOKENS=2000 locally and
-OpenAI cap 4096, the secondary splitter guarantees each Section's payload
-fits inside one OpenAI chunk. Test: test_invariant_no_payload_exceeds_safe_limit.
+One-section-one-chunk invariant: with MAX_SECTION_TOKENS=2000 locally, the
+secondary splitter guarantees each Section's payload fits inside one OpenAI
+chunk of 4096 tokens. That 4096 limit is not assumed — it is explicitly
+requested at attach time via `fill.real_openai_client._CHUNKING_STRATEGY`
+(with zero overlap); omitting it would make OpenAI fall back to its `auto`
+default of 800-token chunks with 400-token overlap, which would re-split
+every section and defeat the invariant.
+Test: test_invariant_no_payload_exceeds_safe_limit.
 """
 
 from __future__ import annotations

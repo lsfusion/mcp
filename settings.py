@@ -20,6 +20,12 @@ SOURCETYPE = "sourceType"
 # fill/ingest.py:_section_attributes).
 SLUG = "slug"
 
+# Attribute key under which the stable chunk id is stored on each VS file
+# ("{slug}::{kebab-section}", written for every uploaded section by
+# fill/ingest.py:_section_attributes). It is the id returned in `DocItem.id`
+# and the one `retrieve_docs(exclude_ids=...)` filters on.
+SECTION_ID = "section_id"
+
 # Bare category values (the docs/<lang> folder names) exposed by the chunker on
 # VS file attributes.
 SOURCETYPE_DOCUMENTATION = "documentation"
@@ -37,14 +43,31 @@ SOURCETYPE_DOC_HOWTO = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_HO
 SOURCETYPE_DOC_BRIEF = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_BRIEF}"
 SOURCETYPE_DOC_RULES = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_RULES}"
 
-# Per-sourceType chunk budget. Each retrieve_docs call issues one
-# vector_stores.search per entry and merges the results by score.
+# Per-sourceType chunk budget for the DEFAULT search — the one that runs when
+# `type` is omitted and searches every branch, merging the results by score.
+# Each entry costs one vector_stores.search, so this is also the per-branch
+# slice of the merged result.
 TOP_K = {
     SOURCETYPE_DOC_PARADIGM: 3,
     SOURCETYPE_DOC_LANGUAGE: 3,
     SOURCETYPE_DOC_HOWTO: 3,
     SOURCETYPE_DOC_BRIEF: 3,
     SOURCETYPE_DOC_RULES: 3,
+}
+
+# Per-sourceType chunk budget used ONLY when `type` is passed explicitly, i.e.
+# when the whole response comes from that single branch.
+# `rules` gets 5 instead of 3: once the rules branch is split into per-area
+# articles, one targeted `type="rules"` query needs a bigger slice to cover the
+# area. Raising it in TOP_K instead would apply to the untyped search too, and
+# drag 5 rules chunks into every generic result at the expense of the other
+# four branches — hence the separate table.
+TYPED_TOP_K = {
+    SOURCETYPE_DOC_PARADIGM: 3,
+    SOURCETYPE_DOC_LANGUAGE: 3,
+    SOURCETYPE_DOC_HOWTO: 3,
+    SOURCETYPE_DOC_BRIEF: 3,
+    SOURCETYPE_DOC_RULES: 5,
 }
 
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===

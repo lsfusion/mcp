@@ -13,7 +13,7 @@ from tools.guidance import SERVER_INSTRUCTIONS
 # `instructions` is returned at the `initialize` handshake and clients embed it
 # in the system prompt. It holds a POINTER to lsfusion_get_guidance, not the
 # guidance itself: clients cap this field (Claude Code at ~2 KB), so shipping the
-# ~52 KB body here delivers a silently mutilated copy with no recoverable tail.
+# ~50 KB body here delivers a silently mutilated copy with no recoverable tail.
 # The tool is the only channel that can carry the whole thing.
 #
 # === Initialize MCP server ===
@@ -37,11 +37,15 @@ def lsfusion_retrieve_docs(
     ],
     type: Annotated[
         Literal["language", "paradigm", "how-to", "brief", "rules"] | None,
-        Field(default=None, description="Optional sourceType filter (the docs folder). Omit (or pass null) to search language, paradigm and how-to and merge; `brief` and `rules` are searched only when requested explicitly (their full text already arrives via get_guidance). `language` = syntax / operator reference; `paradigm` = concepts / abstractions; `how-to` = task recipes; `brief` = concise capability map; `rules` = code conventions."),
+        Field(default=None, description="Optional sourceType filter (the docs folder). Omit (or pass null) to search all five branches and merge; only the two TOP articles (`Brief`, `Rules`) are excluded, because get_guidance already delivers them in full. `language` = syntax / operator reference; `paradigm` = concepts / abstractions; `how-to` = task recipes; `brief` = concise capability map; `rules` = coding constraints for one area — unlike the other branches this lookup is not optional: perform it before working in an area."),
+    ] = None,
+    exclude_ids: Annotated[
+        list[str] | None,
+        Field(default=None, description="Chunk `id` values already received in this session. They are excluded server-side, so a follow-up lookup returns new material instead of repeating what you have. Pass the accumulated ids when continuing a lookup on the same topic; leave empty on the first call."),
     ] = None,
 ) -> RetrieveDocsOutput:
-    """Search official lsFusion documentation (language, paradigm, how-to; plus brief/rules on explicit request) for chunks relevant to a query. Returns `{docs:[{source,text,score}]}` sorted by descending score. Use `type` to narrow to one branch when known; omit to search the default branches and merge. The corpus is English-only (`docs/en/`) — cross-lingual embeddings make non-English queries work, but English wording gives the best recall."""
-    return retrieve_docs_tool(query, type)
+    """Search official lsFusion documentation for chunks relevant to a query. Returns `{docs:[{id,source,text,score}]}` sorted by descending score. Use `type` to narrow to one branch when known; omit to search all five and merge (the two top guidance articles are always excluded — get_guidance serves those in full). Pass the `id` values you already received in `exclude_ids` when continuing a lookup, so the same chunks are not returned twice. The corpus is English-only (`docs/en/`) — cross-lingual embeddings make non-English queries work, but English wording gives the best recall."""
+    return retrieve_docs_tool(query, type, exclude_ids)
 
 
 from tools.guidance import stamped_guidance
@@ -51,7 +55,7 @@ from tools.guidance import stamped_guidance
 # line length cannot read back, stranding the guidance entirely.
 @mcp.tool(structured_output=False)
 def lsfusion_get_guidance() -> str:
-    """Fetch the brief overview and mandatory rules for working with lsFusion. The assistant MUST call this at the start of ANY lsFusion-related task — writing, modifying or reviewing lsFusion code, or answering questions about its syntax or semantics — and MUST then read and strictly follow all rules it returns. Once per session is enough. The result is large and may exceed your client's inline limit: if it is truncated or saved to a file, read the full file before continuing. It opens with a version marker identifying the published guidance revision."""
+    """Fetch the brief overview and the CORE rules for working with lsFusion. The assistant MUST call this at the start of ANY lsFusion-related task — writing, modifying or reviewing lsFusion code, or answering questions about its syntax or semantics — and MUST then read what it returns and apply each rule according to that rule's stated strength (MUST / MUST NOT are binding; SHOULD / SHOULD NOT are recommendations). Once per session is enough. This is the top level only: the rules for a specific area are separate articles, retrieved with `lsfusion_retrieve_docs(type='rules')`. The result is large and may exceed your client's inline limit: if it is truncated or saved to a file, read the full file before continuing. It opens with a version marker identifying the published guidance revision."""
     return stamped_guidance()
 
 

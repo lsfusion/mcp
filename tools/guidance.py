@@ -22,20 +22,29 @@ FETCH_TIMEOUT = float(os.getenv("GUIDANCE_FETCH_TIMEOUT", "10"))
 # The MCP `instructions` field, returned at the `initialize` handshake.
 #
 # It carries only a POINTER, never the guidance itself. Clients truncate this
-# field aggressively (Claude Code cuts it at ~2 KB), so a ~52 KB body would
+# field aggressively (Claude Code cuts it at ~2 KB), so a ~50 KB body would
 # arrive mutilated with no way to recover the tail — and, worse, any claim that
 # "the rules are already in context" would then be a lie the assistant acts on.
 # Keep this text short enough to survive any client's cap intact.
+#
+# Two things this text must NOT do, both of which it used to do: claim the
+# returned set is complete (the per-area rules articles are not in it), and
+# flatten rule strength ("strictly follow every rule") — the guidance contains
+# both MUST and SHOULD, and levelling them silently promotes every SHOULD.
 SERVER_INSTRUCTIONS = (
-    "The lsFusion guidance — a brief capability overview plus the mandatory "
-    "coding rules — is NOT included here. It is large (tens of kilobytes) and is "
+    "The lsFusion guidance — a brief capability overview plus the core coding "
+    "rules — is NOT included here. It is large (tens of kilobytes) and is "
     "served by the `lsfusion_get_guidance` tool.\n\n"
     "Before starting ANY lsFusion task — writing, modifying or reviewing "
     "lsFusion code (`.lsf`), designing forms, properties or actions, or "
     "answering questions about lsFusion syntax or semantics — call "
-    "`lsfusion_get_guidance` and strictly follow every rule it returns. Once "
-    "per session is enough. If your client saves the result to a file and shows "
-    "only a preview, read that file in full before continuing.\n\n"
+    "`lsfusion_get_guidance` and apply every rule it returns according to that "
+    "rule's stated strength (MUST / MUST NOT are binding; SHOULD / SHOULD NOT "
+    "are recommendations). Once per session is enough. If your client saves "
+    "the result to a file and shows only a preview, read that file in full "
+    "before continuing.\n\n"
+    "What it returns is the TOP LEVEL only: the rules for a specific area are "
+    "separate articles, retrieved with `lsfusion_retrieve_docs(type='rules')`.\n\n"
     "Other tools: `lsfusion_retrieve_docs` searches the official documentation; "
     "`lsfusion_report_feedback` submits a consented, depersonalized quality "
     "signal (the guidance says when)."
@@ -44,12 +53,17 @@ SERVER_INSTRUCTIONS = (
 # First lines of every `lsfusion_get_guidance` result. A client that persists an
 # oversized tool result to a file still shows the assistant a preview of the
 # head, so this notice is the one part guaranteed to be read — spend it telling
-# the assistant how to recover the part it cannot see.
+# the assistant how to recover the part it cannot see, and where the rules that
+# are NOT in this response live.
 GUIDANCE_NOTICE = (
-    "> IMPORTANT — this message contains the COMPLETE lsFusion brief and rules. "
-    "If your client truncated it, or saved it to a file and showed you only a "
-    "preview, read that file IN FULL before writing or reviewing any lsFusion "
-    "code. Do not rely on the preview: the rules it omits are mandatory."
+    "> IMPORTANT — this message contains the top-level lsFusion brief and the "
+    "CORE rules; it is not every rule that applies. The rules for a specific "
+    "area are separate articles: retrieve them with "
+    "`lsfusion_retrieve_docs(type='rules', query='<area>')` before working in "
+    "that area. If your client truncated this message, or saved it to a file "
+    "and showed you only a preview, read that file IN FULL before writing or "
+    "reviewing any lsFusion code. Apply each rule at its stated strength: "
+    "MUST / MUST NOT are binding, SHOULD / SHOULD NOT are recommendations."
 )
 
 

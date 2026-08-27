@@ -14,7 +14,14 @@ from fill.config import SOURCE_URL_VERSION  # re-exported, do not edit here
 
 # Bump when MarkdownHeaderTextSplitter config, how-to grouping rules, kebab
 # conversion, secondary-split parameters, or section_id grammar changes.
-# v3 (current): undersized-run merge — trigger on a single short section
+# v4 (current): no chunker-logic change — the VS attach now explicitly
+#   requests chunking_strategy static max_chunk_size_tokens=4096 /
+#   chunk_overlap_tokens=0 (see fill.real_openai_client._CHUNKING_STRATEGY).
+#   Previously the strategy was omitted, so OpenAI applied `auto` (=800/400)
+#   and re-split every section into 50%-overlapping near-duplicate chunks.
+#   The bump forces a full re-scan AND re-upload so the whole index is
+#   rebuilt under the correct strategy.
+# v3: undersized-run merge — trigger on a single short section
 #   (cur < SHORT_SECTION_FLOOR_TOKENS=50), absorb consecutive same-parent
 #   siblings while accumulated body stays ≤ MERGE_SOFT_CAP_TOKENS=256 and
 #   either acc < floor or next < floor (so a stub merges with its
@@ -22,7 +29,7 @@ from fill.config import SOURCE_URL_VERSION  # re-exported, do not edit here
 #   stub detection — files whose body is exactly `### (Under development)`
 #   emit zero sections.
 # v2: _merge_short_siblings — both-short gate.
-CHUNKER_VERSION: str = "v3"
+CHUNKER_VERSION: str = "v4"
 
 # Reserved for future glossary preprocessing (DSL term aliasing, synonym
 # injection). Placeholder until ingest needs it.
