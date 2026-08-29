@@ -372,7 +372,14 @@ def _build_file_sets(
     (logical source_file keys "<type>/<stem>.md")."""
     if state.needs_forced_full_scan(current_versions):
         log.info("forced full scan (no last_commit or pipeline_versions drift)")
-        return _all_docs(docs_root), []
+        # No base commit to diff against, so removals come from the ledger
+        # instead of from git: anything it still tracks that is no longer on
+        # disk was deleted or renamed while we were not looking. Without this
+        # such a doc keeps its sections in the store forever — the orphan
+        # sweep cannot help, since it only considers files the ledger does
+        # NOT know, and these it does.
+        all_docs = _all_docs(docs_root)
+        return all_docs, _tracked_but_gone(state, docs_root, path_for_key)
 
     base_sha = state.last_indexed_docs_commit
     if base_sha is None:
@@ -407,7 +414,24 @@ def _build_file_sets(
         log.debug("stale-but-missing (skipped): %s", missing_stale)
 
     files_to_process = sorted(set(changed_abs) | set(stale_abs))
-    return files_to_process, removed_keys
+    # The diff only sees this window. A doc that went away in an EARLIER one —
+    # while the ledger was behind, or during a cycle that failed before
+    # stamping — is invisible to it, so the ledger is checked against disk as
+    # well. Costs one set difference and no API call.
+    return files_to_process, sorted(set(removed_keys) | set(
+        _tracked_but_gone(state, docs_root, path_for_key)))
+
+
+def _tracked_but_gone(
+    state: State, docs_root: Path, path_for_key: Callable[[str], Path]
+) -> list[str]:
+    """Ledger keys whose file is no longer on disk — deleted or renamed. The
+    orphan sweep cannot see these: it only considers store files the ledger
+    does NOT know, and it knows exactly these."""
+    gone = sorted(k for k in state.files if not path_for_key(k).is_file())
+    if gone:
+        log.info("tracked but gone from disk (%d): %s", len(gone), ", ".join(gone[:10]))
+    return gone
 
 
 def _all_docs(docs_root: Path) -> list[Path]:

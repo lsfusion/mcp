@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from fill.openai_client import FakeVectorStoreClient
-from fill.state import State, load
+from fill.state import State, load, save
 from tools.rag_ingest_docs import (
     EXIT_INGEST_ERRORS,
     EXIT_OK,
@@ -108,6 +108,44 @@ def test_returns_setup_error_when_no_vector_store_id(tmp_path):
 
 
 # ─── forced full scan (first run) ──────────────────────────────────────────
+
+
+def test_forced_full_scan_removes_docs_the_ledger_still_tracks(tmp_path):
+    """A doc deleted or renamed while the ledger was stale must not survive a
+    forced full scan: there is no base commit to diff, so the removals come
+    from the ledger vs what is on disk. The orphan sweep cannot catch these —
+    it only looks at files the ledger does NOT know."""
+    root = _platform_root(
+        tmp_path,
+        files={"rules/Rules_execution.md": _md("Rules execution", "## S\n\nfoo")},
+    )
+    client = FakeVectorStoreClient()
+
+    # First cycle indexes the doc under its old name.
+    old_root = _platform_root(
+        tmp_path / "old",
+        files={"rules/Rules_physical_model.md": _md("Rules physical model", "## S\n\nfoo")},
+    )
+    code, _ = run(platform_root=old_root, client=client, git=FakeGitRunner(head="c1"),
+                  vector_store_id_override="vs_x")
+    assert code == EXIT_OK
+    state_path = old_root / ".rag" / "openai-state.json"
+    assert "rules/Rules_physical_model.md" in load(state_path).files
+
+    # Carry that ledger over to the renamed tree and force a full scan.
+    (root / ".rag").mkdir(parents=True, exist_ok=True)
+    (root / ".rag" / "openai-state.json").write_text(
+        state_path.read_text(encoding="utf-8"), encoding="utf-8")
+    st = load(root / ".rag" / "openai-state.json")
+    st.pipeline_versions = {"chunker_version": "stale"}
+    save(root / ".rag" / "openai-state.json", st)
+
+    code, stats = run(platform_root=root, client=client, git=FakeGitRunner(head="c2"),
+                      vector_store_id_override="vs_x")
+
+    assert code == EXIT_OK
+    assert stats.files_removed == 1
+    assert "rules/Rules_physical_model.md" not in load(root / ".rag" / "openai-state.json").files
 
 
 def test_first_run_does_forced_full_scan_and_stamps_sentinels(tmp_path):
@@ -653,9 +691,11 @@ def test_no_op_ingest_stamps_pipeline_versions(tmp_path):
     assert state_after.last_indexed_docs_commit == "commit-A"
 
 
-def test_stale_but_missing_entry_remains_in_state(tmp_path):
-    """A stale entry whose file no longer exists doesn't trigger an error
-    but also isn't auto-removed; reconcile or a later git-diff handles it."""
+def test_entry_whose_file_is_gone_is_removed_even_without_a_diff(tmp_path):
+    """A ledger entry whose file no longer exists is removed on the next
+    cycle, whether or not the git diff of that window mentions it — the
+    deletion may have happened while the ledger was behind. Before this the
+    entry survived, and with it the doc's sections in the store."""
     root = _platform_root(
         tmp_path,
         files={"language/AGGR.md": _md("AGGR", "## S\n\nx")},
@@ -673,4 +713,4 @@ def test_stale_but_missing_entry_remains_in_state(tmp_path):
         git=FakeGitRunner(head="c2"))
 
     state_after = load(state_path)
-    assert "language/DELETED.md" in state_after.files  # entry persists until cleaned
+    assert "language/DELETED.md" not in state_after.files
