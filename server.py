@@ -33,7 +33,7 @@ from tools.rag_retrieve import retrieve_docs_tool, RetrieveDocsOutput
 def lsfusion_retrieve_docs(
     query: Annotated[
         str,
-        Field(description="Short topical phrase. Semantic match (not literal); rephrase rather than retry the same query if results are weak."),
+        Field(description="Name the keywords of what you need, not the topic: `NEWSESSION APPLY canceled nested session`, not `sessions`. A bare noun is what every article in a branch is about, and the search answers it with whichever one is longest — on this corpus a one-word area name never put that area's own article first, and its keywords did every time. Semantic match, not literal: rephrase rather than retry the same query if results are weak."),
     ],
     type: Annotated[
         Literal["language", "paradigm", "how-to", "brief", "rules"] | None,
