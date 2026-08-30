@@ -47,7 +47,13 @@ Returns an array of objects:
   ]
 }
 ```
-Sorted by `score` descending. Structured output is enabled.
+Ranked by `score` plus a bounded bonus for query words the article's own title
+and slug carry (full weight) or a section heading under it carries (reduced) —
+so `score`, the raw vector-store similarity, does not descend across the whole
+list, and the array order IS the ranking. The bonus is capped, so it reorders
+near neighbours rather than overturning a hit the store scored decisively
+higher: asked for `navigator`, where the store on its own answered with the
+navigator article at rank 11, it now comes first. Structured output is enabled.
 
 ## Environment variables
 - `OPENAI_API_KEY` — OpenAI API key (required).
@@ -58,7 +64,7 @@ Sorted by `score` descending. Structured output is enabled.
 - `QUERY_LOG_MAX_CHARS` / `ERROR_LOG_MAX_CHARS` — caps on the verbatim query / error text stored in logs (default 2000 / 500).
 
 ## Event logging (`retrieve_docs`)
-Every `lsfusion_retrieve_docs` call emits one structured JSON line (best-effort — a logging failure never breaks the tool). Envelope `{schema_version, event, ts (ISO-8601 UTC ms), server_version, ok}` plus `{query (capped), type, n_requested, n_results, top_score, latency_ms, results:[{rank, source, file_id, filename, score}]}` — no chunk text; `error_class`/`error_message` on failure. Written to **stderr** (keeps the STDIO transport's stdout protocol channel clean; Docker's `json-file` captures stderr anyway), and additionally to a dated file when `LOG_DIR` is set. See `MCP-FEEDBACK-PLAN.md`.
+Every `lsfusion_retrieve_docs` call emits one structured JSON line (best-effort — a logging failure never breaks the tool). Envelope `{schema_version, event, ts (ISO-8601 UTC ms), server_version, ok}` plus `{query (capped), type, n_requested, n_results, top_score = max(results[].score), latency_ms, results:[{rank, source, file_id, filename, score}]}` — no chunk text; `error_class`/`error_message` on failure. Written to **stderr** (keeps the STDIO transport's stdout protocol channel clean; Docker's `json-file` captures stderr anyway), and additionally to a dated file when `LOG_DIR` is set. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Docker
 

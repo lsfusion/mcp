@@ -20,6 +20,11 @@ SOURCETYPE = "sourceType"
 # fill/ingest.py:_section_attributes).
 SLUG = "slug"
 
+# Attribute key under which the article's heading path is stored on each VS
+# file ("Rules: navigator > Navigator rules"; see fill/ingest.py:_section_attributes).
+# It is what a query is matched against for the title rerank.
+HEADING_PATH = "heading_path"
+
 # Attribute key under which the stable chunk id is stored on each VS file
 # ("{slug}::{kebab-section}", written for every uploaded section by
 # fill/ingest.py:_section_attributes). It is the id returned in `DocItem.id`
@@ -75,9 +80,46 @@ TYPED_TOP_K = {
     SOURCETYPE_DOC_RULES: 7,
 }
 
+# How many candidates each branch search asks the store for before the title
+# rerank picks the quota out of them. Separate from the quota on purpose: a
+# short query's own article is often outside the first few, and promoting it
+# is only possible among candidates we were given. Bigger costs response size
+# from the store, not an extra call.
+TITLE_RERANK_CANDIDATE_K = 30
+
+# What a heading match adds to a chunk's store score, per fraction of the
+# query's words carried by its heading path. Bounded on purpose: a named
+# article overtakes a near neighbour without passing a hit the store scored
+# decisively higher, so a query that names an article and one thing besides
+# ("navigator caching") is helped rather than dropped back to nothing.
+# Measured against the live store: at 0.3 queries that are just an area name go
+# from 0 first places in 12 to 12, while natural-language questions (5/5) and
+# questions sharing no wording with their article (6 of 8) stay exactly at the
+# unmodified baseline, chunk for chunk. At 0.4 and above the latter start to
+# erode; at 0.2 the area names only reach 10.
+TITLE_MATCH_BOOST = 0.3
+
+# Weight of a match in the SECTION part of the heading path, relative to the
+# article's own title. A path reads "<article title> > <H2> > <H3>": the title
+# says what the article is about, a section name is a detail of it, and a
+# generic one ("Operator", "Examples") repeats across dozens of articles. One
+# depth weight for the whole tail, not a list of exceptions.
+HEADING_SECTION_WEIGHT = 0.4
+
+# Words dropped before matching a query against a heading path. They are the
+# words a caller adds to say WHICH KIND of answer it wants rather than what
+# about — `rules`/`brief` name this corpus's own branches. An empty set after
+# this means the query says nothing to match a title on, and nothing is
+# promoted.
+TITLE_MATCH_STOPWORDS = frozenset({
+    "a", "an", "and", "brief", "for", "in", "of", "on", "rules", "the", "to", "with",
+})
+
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===
-# Bump when the log envelope/record shape changes.
-LOG_SCHEMA_VERSION = 2
+# Bump when the log envelope/record shape changes, or when a field's MEANING
+# does. v3: `top_score` is max(results[].score); in v2 it was the first hit's
+# score, which stopped being the maximum once the heading bonus reorders.
+LOG_SCHEMA_VERSION = 3
 # Stamped into every event so analytics can attribute records to a build. Ops
 # should set this (image digest / git sha) in the deployment env.
 SERVER_VERSION = os.environ.get("MCP_SERVER_VERSION", "unknown")

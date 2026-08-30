@@ -1,6 +1,8 @@
 from __future__ import annotations
 import logging
+import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import List
 from pydantic import BaseModel, Field
@@ -24,8 +26,13 @@ from settings import (
     SOURCETYPE,
     SLUG,
     SECTION_ID,
+    HEADING_PATH,
     TOP_K,
     TYPED_TOP_K,
+    TITLE_RERANK_CANDIDATE_K,
+    TITLE_MATCH_STOPWORDS,
+    TITLE_MATCH_BOOST,
+    HEADING_SECTION_WEIGHT,
     QUERY_LOG_MAX_CHARS,
     ERROR_LOG_MAX_CHARS,
 )
@@ -37,7 +44,7 @@ class DocItem(BaseModel):
     id: str = Field(..., description="Stable chunk id; pass it in `exclude_ids` to keep this chunk out of a follow-up retrieve_docs call.")
     source: str = Field(..., description="Chunk origin (e.g. documentation-language, documentation-paradigm).")
     text: str = Field(..., description="Retrieved text snippet.")
-    score: float = Field(..., description="Similarity score (higher = more relevant).")
+    score: float = Field(..., description="Raw vector-store similarity score (higher = closer). The list is ranked by this score plus a bounded bonus for query words the article's title or section headings carry, so it does NOT descend across the whole list — the array order IS the ranking, do not re-sort it by this field.")
 
 
 class RetrieveDocsOutput(BaseModel):
@@ -70,6 +77,10 @@ class _Hit:
     score: float
     file_id: str | None
     filename: str | None
+    # How much of the query the chunk's heading path carries — see
+    # _title_coverage. Worth a bounded addition to `score`, at most
+    # TITLE_MATCH_BOOST; 0.0 changes nothing.
+    title_coverage: float = 0.0
 
 
 def _filters_for_source(source_type: str, exclude_ids: list[str] | None = None) -> dict:
@@ -111,10 +122,14 @@ def _vs_search_for_source(
     """
     if top_k <= 0:
         return []
+    # Ask for candidates, not for the answer: the quota is what comes back, and
+    # a short query's own article is often outside it (asked for `navigator`,
+    # the store put the navigator article at rank 11 of one branch). Costs a
+    # bigger response from the store, not another call.
     resp = client.vector_stores.search(
         vector_store_id=RAG_VECTOR_STORE_ID,
         query=query,
-        max_num_results=top_k,
+        max_num_results=max(top_k, TITLE_RERANK_CANDIDATE_K),
         filters=_filters_for_source(source_type, exclude_ids),
         rewrite_query=False,
     )
@@ -144,8 +159,76 @@ def _vs_search_for_source(
             score=float(hit.score or 0.0),
             file_id=getattr(hit, "file_id", None),
             filename=getattr(hit, "filename", None),
+            title_coverage=_title_coverage(
+                query,
+                str(attributes.get(HEADING_PATH) or ""),
+                str(attributes.get(SLUG) or ""),
+            ),
         ))
-    return hits
+    # The store's ranking, nudged by how much of the query each heading path
+    # carries. Then cut to the quota — the branch returns what it always did,
+    # chosen from a wider field.
+    hits.sort(key=_rank_key)
+    return hits[:top_k]
+
+
+
+def _rank_key(hit: "_Hit") -> float:
+    """The one ranking rule, applied inside a branch and again across branches.
+
+    The store's own ranking, plus at most `TITLE_MATCH_BOOST` for a query whose
+    words the article's heading path carries. Bounded and additive on purpose:
+    the bonus reorders near neighbours — it cannot lift an article past a hit
+    the store scored more than TITLE_MATCH_BOOST higher — and naming nothing
+    leaves the store's order untouched. An unconditional tier for a full match was tried
+    and dropped — a one-word query like `operator` fully matches a section name
+    in dozens of articles, and a tier lets all of them jump a confident
+    semantic hit, which the additive form cannot do."""
+    return -(hit.score + TITLE_MATCH_BOOST * hit.title_coverage)
+
+
+def _words(text: str) -> set[str]:
+    """Whole words, NFC-normalized and casefolded, Unicode-aware: a Russian
+    query must survive as words rather than vanish and leave a stray English
+    identifier behind to match a title by accident. `_`, `-` and punctuation
+    separate. NFC first so a decomposed `й` or `é` compares equal to the
+    composed form a title happens to be written with."""
+    text = unicodedata.normalize("NFC", text)
+    return {w for w in re.split(r"[^\w]+", text.replace("_", " ").casefold(), flags=re.UNICODE) if w}
+
+
+def _title_coverage(query: str, heading_path: str, slug: str) -> float:
+    """What fraction of the query's meaningful words the article's heading path
+    carries — the article's own title counted in full, the section titles under
+    it at `HEADING_SECTION_WEIGHT`. 1.0 means the query names this article and
+    nothing else; 0.0 means it names nothing here and the store's order stands.
+
+    The denominator is EVERY meaningful word of the query, including words no
+    heading carries. That is what keeps a paraphrase honest: asked to "forbid
+    saving invalid data", an article whose title merely contains `data` covers
+    one word in four, not all of the words it happens to know. Weighting the
+    matched words by rarity instead was measured and changed nothing, at the
+    price of corpus statistics the server does not otherwise need.
+
+    A query naming an article is where the vector search is at its weakest:
+    asked for `navigator` it answered with the navigator article at rank 11 of
+    its branch, behind longer articles that merely mention navigators. A
+    question phrased in the reader's own words matches no heading, scores 0.0
+    here, and is returned exactly as the store ranked it — which is what the
+    store is good at."""
+    wanted = _words(query) - TITLE_MATCH_STOPWORDS
+    if not wanted:
+        return 0.0
+    # "<article title> > <H2> > <H3>" — the head names the article, the tail
+    # details it. The slug is the article's own name too, spelled for a URL.
+    head, _, tail = heading_path.partition(" > ")
+    title = _words(head) | _words(slug)
+    # A word in BOTH the title and a section counts once, at the title's full
+    # weight — never 1.0 + 0.4. That is what keeps coverage within [0, 1] and
+    # the bonus within TITLE_MATCH_BOOST.
+    section = _words(tail) - title
+    return (len(wanted & title)
+            + HEADING_SECTION_WEIGHT * len(wanted & section)) / len(wanted)
 
 
 ALLOWED_TYPES = (
@@ -226,7 +309,9 @@ def retrieve_docs_tool(
             hits.extend(_vs_search_for_source(
                 query, source_type, quotas.get(_TYPE_TO_TOP_K[source_type], 0),
                 exclude_ids))
-        hits.sort(key=lambda h: -h.score)
+        # Ranked the same way across branches — sorting on score alone would
+        # undo the per-branch promotion the moment two branches are merged.
+        hits.sort(key=_rank_key)
     except Exception as e:  # noqa: BLE001 — log the failed call, then re-raise unchanged
         _log_retrieval(query, type, n_requested, [], start,
                        ok=False, error=e, exclude_ids=exclude_ids)
@@ -276,7 +361,10 @@ def _log_retrieval(
             # keeps no chunk identity the caller did not get from us anyway.
             "n_excluded": len(exclude_ids or []),
             "n_results": len(hits),
-            "top_score": (hits[0].score if hits else None),
+            # The MAX store score, not the first hit's: the list is ranked by
+            # score plus the title bonus, so the head of it need not be the
+            # best-scoring chunk. Gap analytics compare stores, not orders.
+            "top_score": (max(h.score for h in hits) if hits else None),
             "latency_ms": int((time.monotonic() - start) * 1000),
             "results": [
                 {
