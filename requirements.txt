@@ -12,4 +12,8 @@ openai>=1.50.0  # vector_stores.search (retrieve_docs_tool)
 # CHUNKER_VERSION when these pins change.
 tiktoken==0.12.0
 langchain-text-splitters==1.1.2
-python-frontmatter==1.1.0numpy>=2.0,<3.0  # local dense index (fill/snapshot.py, tools/local_index.py)
+python-frontmatter==1.1.0
+
+# The local dense index: the whole search is one matrix multiply over the
+# snapshot (fill/snapshot.py, tools/local_index.py).
+numpy>=2.0,<3.0
