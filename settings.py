@@ -28,10 +28,6 @@ SLUG = "slug"
 # file ("Rules: navigator > Navigator rules"; see fill/ingest.py:_section_attributes).
 # It is what a query is matched against for the title rerank.
 HEADING_PATH = "heading_path"
-# The article's own `keywords` frontmatter — the words a reader searches for
-# that its title does not use ("validation" for an article titled
-# "constraints"). Stamped by fill/ingest.py only on articles that declare any.
-KEYWORDS = "keywords"
 
 # Attribute key under which the stable chunk id is stored on each VS file
 # ("{slug}::{kebab-section}", written for every uploaded section by
@@ -88,41 +84,6 @@ TYPED_TOP_K = {
     SOURCETYPE_DOC_RULES: 7,
 }
 
-# How many candidates each branch search asks the store for before the title
-# rerank picks the quota out of them. Separate from the quota on purpose: a
-# short query's own article is often outside the first few, and promoting it
-# is only possible among candidates we were given. Bigger costs response size
-# from the store, not an extra call.
-TITLE_RERANK_CANDIDATE_K = 30
-
-# What a heading match adds to a chunk's store score, per fraction of the
-# query's words carried by its heading path. Bounded on purpose: a named
-# article overtakes a near neighbour without passing a hit the store scored
-# decisively higher, so a query that names an article and one thing besides
-# ("navigator caching") is helped rather than dropped back to nothing.
-# Measured against the live store: at 0.3 queries that are just an area name go
-# from 0 first places in 12 to 12, while natural-language questions (5/5) and
-# questions sharing no wording with their article (6 of 8) stay exactly at the
-# unmodified baseline, chunk for chunk. At 0.4 and above the latter start to
-# erode; at 0.2 the area names only reach 10.
-TITLE_MATCH_BOOST = 0.3
-
-# Weight of a match in the SECTION part of the heading path, relative to the
-# article's own title. A path reads "<article title> > <H2> > <H3>": the title
-# says what the article is about, a section name is a detail of it, and a
-# generic one ("Operator", "Examples") repeats across dozens of articles. One
-# depth weight for the whole tail, not a list of exceptions.
-HEADING_SECTION_WEIGHT = 0.4
-
-# Words dropped before matching a query against a heading path. They are the
-# words a caller adds to say WHICH KIND of answer it wants rather than what
-# about — `rules`/`brief` name this corpus's own branches. An empty set after
-# this means the query says nothing to match a title on, and nothing is
-# promoted.
-TITLE_MATCH_STOPWORDS = frozenset({
-    "a", "an", "and", "brief", "for", "in", "of", "on", "rules", "the", "to", "with",
-})
-
 # === Local dense index (fill/snapshot.py, tools/local_index.py) ===
 # Where the server looks for the snapshot. Empty (or a missing file) => the
 # local index is simply not used and retrieval goes to the vector store, which
@@ -136,15 +97,6 @@ SNAPSHOT_PATH = os.environ.get("RAG_SNAPSHOT_PATH", "/data/snapshot/corpus.npz")
 # the snapshot is missing or the embedding call fails.
 RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "store")
 
-# The heading bonus again, on the LOCAL backend's scale. TITLE_MATCH_BOOST is
-# 0.3 because that is what moves a vector-store score; a cosine's neighbours sit
-# much closer together, and the same 0.3 there would let a heading match
-# overturn the ranking outright. Measured on the local index: at 0.05 one-word
-# area names go from 9 first places in 12 to 11, while 120 real queries move by
-# +0.003 nDCG@5 (interval [-0.004, +0.009]) — i.e. it costs nothing and saves a
-# narrow class.
-LOCAL_TITLE_MATCH_BOOST = float(os.environ.get("LOCAL_TITLE_MATCH_BOOST", "0.05"))
-
 # How old a snapshot may get before every load says so. A stale index does not
 # fail — it answers from documentation that has moved on — so age is WARNED
 # about rather than refused: refusing would take retrieval down for a weekend
@@ -155,7 +107,8 @@ SNAPSHOT_MAX_AGE_DAYS = float(os.environ.get("SNAPSHOT_MAX_AGE_DAYS", "7"))
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===
 # Bump when the log envelope/record shape changes, or when a field's MEANING
 # does. v3: `top_score` is max(results[].score); in v2 it was the first hit's
-# score, which stopped being the maximum once the heading bonus reorders.
+# score, which stopped being the maximum while a heading bonus reordered the
+# list (that bonus is gone, but the field keeps the v3 meaning).
 LOG_SCHEMA_VERSION = 3
 # Stamped into every event so analytics can attribute records to a build. Ops
 # should set this (image digest / git sha) in the deployment env.

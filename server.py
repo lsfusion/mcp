@@ -33,7 +33,7 @@ from tools.rag_retrieve import retrieve_docs_tool, RetrieveDocsOutput
 def lsfusion_retrieve_docs(
     query: Annotated[
         str,
-        Field(description="Name the keywords of what you need, not the topic: `NEWSESSION APPLY canceled nested session`, not `sessions`. A bare noun is what every article in a branch is about, and the semantic search answers it with whichever one is longest; a heading match pulls the named article back up, but only within a bounded margin, while keywords put it first outright. Semantic match, not literal: rephrase rather than retry the same query if results are weak."),
+        Field(description="Name the keywords of what you need, not the topic: `NEWSESSION APPLY canceled nested session`, not `sessions`. A bare noun is what every article in a branch is about, and the search answers it with whichever one is closest to that whole topic; keywords name the one you want. Semantic match, not literal: rephrase rather than retry the same query if results are weak."),
     ],
     type: Annotated[
         Literal["language", "paradigm", "how-to", "brief", "rules"] | None,
@@ -44,7 +44,7 @@ def lsfusion_retrieve_docs(
         Field(default=None, description="Chunk `id` values you already hold. They are excluded server-side BEFORE ranking, so the quota is spent on material you do not have. Use this to page deeper on the same information need. Do NOT use it to rephrase a query for a better ranking, or to ask a different question about the same area: the filter ignores the new query, so a chunk that is now the most relevant one would be dropped before ranking. Leave empty on the first call."),
     ] = None,
 ) -> RetrieveDocsOutput:
-    """Search official lsFusion documentation for chunks relevant to a query. Returns `{docs:[{id,source,text,score}]}`, ranked by similarity plus a bounded bonus for query words carried by the article's own title and slug (full weight) or by a section heading under it (reduced) — so `score` is the raw vector-store number and is not guaranteed to descend across the whole list. Use `type` to narrow to one branch when known; omit to search all five and merge (the two top guidance articles are always excluded — get_guidance serves those in full). To page deeper on one information need, pass the `id` values you already hold in `exclude_ids`; they are filtered out before ranking. Omit them when rephrasing for a better ranking or asking a different question, or the filter will drop the chunk that best answers it. The corpus is English-only (`docs/en/`) — cross-lingual embeddings make non-English queries work, but English wording gives the best recall."""
+    """Search official lsFusion documentation for chunks relevant to a query. Returns `{docs:[{id,source,text,score}]}`, ranked by similarity — so `score` is the raw vector-store number and is not guaranteed to descend across the whole list. Use `type` to narrow to one branch when known; omit to search all five and merge (the two top guidance articles are always excluded — get_guidance serves those in full). To page deeper on one information need, pass the `id` values you already hold in `exclude_ids`; they are filtered out before ranking. Omit them when rephrasing for a better ranking or asking a different question, or the filter will drop the chunk that best answers it. The corpus is English-only (`docs/en/`) — cross-lingual embeddings make non-English queries work, but English wording gives the best recall."""
     return retrieve_docs_tool(query, type, exclude_ids)
 
 

@@ -47,13 +47,8 @@ Returns an array of objects:
   ]
 }
 ```
-Ranked by `score` plus a bounded bonus for query words the article's own title
-and slug carry (full weight) or a section heading under it carries (reduced) —
-so `score`, the raw vector-store similarity, does not descend across the whole
-list, and the array order IS the ranking. The bonus is capped, so it reorders
-near neighbours rather than overturning a hit the store scored decisively
-higher: asked for `navigator`, where the store on its own answered with the
-navigator article at rank 11, it now comes first. Structured output is enabled.
+Ranked by `score` — the similarity of the chunk to the query. Structured
+output is enabled.
 
 ## Environment variables
 - `OPENAI_API_KEY` — OpenAI API key (required).

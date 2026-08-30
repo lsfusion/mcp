@@ -27,14 +27,8 @@ from settings import (
     SLUG,
     SECTION_ID,
     HEADING_PATH,
-    KEYWORDS,
     TOP_K,
     TYPED_TOP_K,
-    TITLE_RERANK_CANDIDATE_K,
-    TITLE_MATCH_STOPWORDS,
-    TITLE_MATCH_BOOST,
-    LOCAL_TITLE_MATCH_BOOST,
-    HEADING_SECTION_WEIGHT,
     RETRIEVAL_BACKEND,
     EMBEDDING_MODEL,
     QUERY_LOG_MAX_CHARS,
@@ -49,7 +43,7 @@ class DocItem(BaseModel):
     id: str = Field(..., description="Stable chunk id; pass it in `exclude_ids` to keep this chunk out of a follow-up retrieve_docs call.")
     source: str = Field(..., description="Chunk origin (e.g. documentation-language, documentation-paradigm).")
     text: str = Field(..., description="Retrieved text snippet.")
-    score: float = Field(..., description="Raw vector-store similarity score (higher = closer). The list is ranked by this score plus a bounded bonus for query words the article's title or section headings carry, so it does NOT descend across the whole list — the array order IS the ranking, do not re-sort it by this field.")
+    score: float = Field(..., description="Similarity score, higher = closer. The list is ranked by it.")
 
 
 class RetrieveDocsOutput(BaseModel):
@@ -82,10 +76,6 @@ class _Hit:
     score: float
     file_id: str | None
     filename: str | None
-    # How much of the query the chunk's heading path carries — see
-    # _title_coverage. Worth a bounded addition to `score`, at most
-    # TITLE_MATCH_BOOST; 0.0 changes nothing.
-    title_coverage: float = 0.0
 
 
 def _filters_for_source(source_type: str, exclude_ids: list[str] | None = None) -> dict:
@@ -134,7 +124,7 @@ def _vs_search_for_source(
     resp = client.vector_stores.search(
         vector_store_id=RAG_VECTOR_STORE_ID,
         query=query,
-        max_num_results=max(top_k, TITLE_RERANK_CANDIDATE_K),
+        max_num_results=top_k,
         filters=_filters_for_source(source_type, exclude_ids),
         rewrite_query=False,
     )
@@ -164,17 +154,7 @@ def _vs_search_for_source(
             score=float(hit.score or 0.0),
             file_id=getattr(hit, "file_id", None),
             filename=getattr(hit, "filename", None),
-            title_coverage=_title_coverage(
-                query,
-                str(attributes.get(HEADING_PATH) or ""),
-                str(attributes.get(SLUG) or ""),
-                str(attributes.get(KEYWORDS) or ""),
-            ),
         ))
-    # The store's ranking, nudged by how much of the query each heading path
-    # carries. Then cut to the quota — the branch returns what it always did,
-    # chosen from a wider field.
-    hits.sort(key=_rank_key)
     return hits[:top_k]
 
 
@@ -201,7 +181,7 @@ def _local_search_for_source(query: str, query_vector, source_type: str,
         query_vector, source_type,
         # A wider field than the quota, for the same reason the store call asks
         # for one: the heading bonus can only reorder what it was given.
-        max(top_k, TITLE_RERANK_CANDIDATE_K),
+        top_k,
         exclude_ids=set(exclude_ids or ()),
         exclude_slugs={top_slug} if top_slug else None,
     )
@@ -214,81 +194,8 @@ def _local_search_for_source(query: str, query_vector, source_type: str,
         # the identity that matters and it is already in `id`.
         file_id=None,
         filename=None,
-        title_coverage=_title_coverage(query, r["heading_path"], r["slug"], r["keywords"]),
     ) for r in rows]
-    hits.sort(key=_local_rank_key)
     return hits[:top_k]
-
-
-def _local_rank_key(hit: "_Hit") -> float:
-    """Same rule as `_rank_key`, on the cosine's scale — see
-    LOCAL_TITLE_MATCH_BOOST for why the coefficient is not the same number."""
-    return -(hit.score + LOCAL_TITLE_MATCH_BOOST * hit.title_coverage)
-
-
-def _rank_key(hit: "_Hit") -> float:
-    """The one ranking rule, applied inside a branch and again across branches.
-
-    The store's own ranking, plus at most `TITLE_MATCH_BOOST` for a query whose
-    words the article's heading path carries. Bounded and additive on purpose:
-    the bonus reorders near neighbours — it cannot lift an article past a hit
-    the store scored more than TITLE_MATCH_BOOST higher — and naming nothing
-    leaves the store's order untouched. An unconditional tier for a full match was tried
-    and dropped — a one-word query like `operator` fully matches a section name
-    in dozens of articles, and a tier lets all of them jump a confident
-    semantic hit, which the additive form cannot do."""
-    return -(hit.score + TITLE_MATCH_BOOST * hit.title_coverage)
-
-
-def _words(text: str) -> set[str]:
-    """Whole words, NFC-normalized and casefolded, Unicode-aware: a Russian
-    query must survive as words rather than vanish and leave a stray English
-    identifier behind to match a title by accident. `_`, `-` and punctuation
-    separate. NFC first so a decomposed `й` or `é` compares equal to the
-    composed form a title happens to be written with."""
-    text = unicodedata.normalize("NFC", text)
-    return {w for w in re.split(r"[^\w]+", text.replace("_", " ").casefold(), flags=re.UNICODE) if w}
-
-
-def _title_coverage(query: str, heading_path: str, slug: str, keywords: str = "") -> float:
-    """What fraction of the query's meaningful words the article's heading path
-    carries — the article's own title counted in full, the section titles under
-    it at `HEADING_SECTION_WEIGHT`. 1.0 means the query names this article and
-    nothing else; 0.0 means it names nothing here and the store's order stands.
-
-    The denominator is EVERY meaningful word of the query, including words no
-    heading carries. That is what keeps a paraphrase honest: asked to "forbid
-    saving invalid data", an article whose title merely contains `data` covers
-    one word in four, not all of the words it happens to know. Weighting the
-    matched words by rarity instead was measured and changed nothing, at the
-    price of corpus statistics the server does not otherwise need.
-
-    `keywords` — the article's own frontmatter list — counts as its title.
-    That is the only answer to a query that names the right article in the
-    wrong words: asked to "forbid saving invalid data", the constraints
-    article shares NOT ONE word with the query (it says restricted, violate,
-    CHECKED BY), so no amount of matching can find it and no weighting can
-    rescue it. A `keywords: validation, forbid` on that article can.
-
-    A query naming an article is where the vector search is at its weakest:
-    asked for `navigator` it answered with the navigator article at rank 11 of
-    its branch, behind longer articles that merely mention navigators. A
-    question phrased in the reader's own words matches no heading, scores 0.0
-    here, and is returned exactly as the store ranked it — which is what the
-    store is good at."""
-    wanted = _words(query) - TITLE_MATCH_STOPWORDS
-    if not wanted:
-        return 0.0
-    # "<article title> > <H2> > <H3>" — the head names the article, the tail
-    # details it. The slug is the article's own name too, spelled for a URL.
-    head, _, tail = heading_path.partition(" > ")
-    title = _words(head) | _words(slug) | _words(keywords)
-    # A word in BOTH the title and a section counts once, at the title's full
-    # weight — never 1.0 + 0.4. That is what keeps coverage within [0, 1] and
-    # the bonus within TITLE_MATCH_BOOST.
-    section = _words(tail) - title
-    return (len(wanted & title)
-            + HEADING_SECTION_WEIGHT * len(wanted & section)) / len(wanted)
 
 
 ALLOWED_TYPES = (
@@ -385,9 +292,12 @@ def retrieve_docs_tool(
                     query, local, source_type, top_k, exclude_ids))
             else:
                 hits.extend(_vs_search_for_source(query, source_type, top_k, exclude_ids))
+        # Five branches were searched separately, each against its own quota;
+        # the caller gets one list, so rank it. Scores are comparable within a
+        # backend (all five came from the same one), never across.
+        hits.sort(key=lambda h: -h.score)
         # Ranked the same way across branches — sorting on score alone would
         # undo the per-branch promotion the moment two branches are merged.
-        hits.sort(key=_local_rank_key if local is not None else _rank_key)
     except Exception as e:  # noqa: BLE001 — log the failed call, then re-raise unchanged
         _log_retrieval(query, type, n_requested, [], start,
                        ok=False, error=e, exclude_ids=exclude_ids,
