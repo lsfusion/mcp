@@ -43,7 +43,7 @@ from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
 )
 
-from fill.config import build_source_url
+from fill.config import build_source_url, KEYWORDS_MAX_LEN
 from fill.versions import (
     CHUNKER_VERSION,
     GLOSSARY_VERSION,
@@ -147,10 +147,24 @@ class Section:
     source_url: str
     source_type: SourceType
     raw_content: str
+    # The article's own `keywords` frontmatter, joined — the words a reader
+    # would search for that the title does not use ("validation" for an
+    # article titled "constraints"). Empty for an article that declares none,
+    # and an empty one changes NOTHING: the payload and the hash stay
+    # byte-identical to what they were before keywords existed, so adding the
+    # field costs no re-index of the articles that do not use it.
+    keywords: str = ""
 
     @property
     def prefix(self) -> str:
-        return f"# {self.source_type}: {self.heading_path}\n\n"
+        # Carried in the PAYLOAD, not only in an attribute: the store's own
+        # ranking is visibly pulled by shared words — asked to "forbid saving
+        # invalid data" it answered with a chunk holding `data` five times over
+        # the constraints article, which uses none of the query's words — so a
+        # keyword only the local rerank could see would leave the semantic leg
+        # exactly as blind as it is today.
+        keywords = f"keywords: {self.keywords}\n" if self.keywords else ""
+        return f"# {self.source_type}: {self.heading_path}\n{keywords}\n"
 
     @property
     def payload(self) -> str:
@@ -170,6 +184,9 @@ class Section:
                     "content": self.raw_content,
                     "sourceType": self.source_type,
                     "heading_path": self.heading_path,
+                    # Only when non-empty, so every article that declares no
+                    # keywords keeps the hash it already has in the store.
+                    **({"keywords": self.keywords} if self.keywords else {}),
                     "chunker_version": CHUNKER_VERSION,
                     "glossary_version": GLOSSARY_VERSION,
                     "prefix_version": PREFIX_VERSION,
@@ -187,6 +204,32 @@ class Section:
 
 def count_tokens(text: str) -> int:
     return len(TOKENIZER.encode(text))
+
+
+def _keywords(value) -> str:
+    """The article's `keywords` frontmatter, normalized to one line.
+
+    Docusaurus already defines this field (an array of strings, published as
+    the page's meta keywords), so an article states its search words there and
+    the site keeps validating — no frontmatter key of our own, no second place
+    to look. A plain string is accepted too, split on commas, because that is
+    how a human writes one by hand.
+
+    The result is capped: it rides in a vector-store attribute, where values
+    are bounded, and a keyword list long enough to hit the cap has stopped
+    being a list of keywords."""
+    if isinstance(value, str):
+        items = [p.strip() for p in value.split(",")]
+    elif isinstance(value, (list, tuple)):
+        items = [str(p).strip() for p in value]
+    else:
+        return ""
+    # Order preserved, blanks and exact duplicates dropped.
+    seen: dict[str, None] = {}
+    for it in items:
+        if it:
+            seen.setdefault(it, None)
+    return ", ".join(seen)[:KEYWORDS_MAX_LEN]
 
 
 def kebab_case(name: str) -> str:
@@ -311,6 +354,7 @@ def chunk_md(path: Path, source_type: SourceType, slug: str) -> list[Section]:
     raw = path.read_text(encoding="utf-8")
     fm = frontmatter.loads(raw)
     title = (fm.get("title") or slug).strip()
+    keywords = _keywords(fm.get("keywords"))
     body = fm.content
 
     if _is_under_development_stub(body):
@@ -333,6 +377,7 @@ def chunk_md(path: Path, source_type: SourceType, slug: str) -> list[Section]:
                 segments=[title],
                 section_id=f"{slug}::_root",
                 content=body.strip() or "(empty)",
+                keywords=keywords,
             )
         ]
 
@@ -388,6 +433,7 @@ def chunk_md(path: Path, source_type: SourceType, slug: str) -> list[Section]:
                     segments=segments,
                     section_id=section_id,
                     content=content_stripped,
+                    keywords=keywords,
                 )
             )
             continue
@@ -410,6 +456,7 @@ def chunk_md(path: Path, source_type: SourceType, slug: str) -> list[Section]:
                 segments=segments,
                 section_id=sub_id,
                 content=sub,
+                keywords=keywords,
             )
             # Hard invariant — any oversized sub here is a chunker bug.
             if count_tokens(sub_section.payload) > OPENAI_CHUNK_LIMIT:
@@ -610,6 +657,7 @@ def _make_section(
     segments: list[str],
     section_id: str,
     content: str,
+    keywords: str = "",
 ) -> Section:
     heading_path = " > ".join(segments)
     section_name = segments[-1] if segments else "_root"
@@ -621,4 +669,5 @@ def _make_section(
         source_url=build_source_url(slug),
         source_type=source_type,
         raw_content=content.strip(),
+        keywords=keywords,
     )

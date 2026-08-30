@@ -577,6 +577,21 @@ def test_coverage_is_the_share_of_the_query_the_headings_carry():
     assert rr._title_coverage("undo unsaved edits", "Rules: navigator > Navigator rules", "Rules_navigator") == 0.0
 
 
+def test_an_articles_keywords_count_as_its_title():
+    """The only answer to a query that names the right article in the wrong
+    words. Asked to "forbid saving invalid data", the constraints article
+    shares NOT ONE word with the query — it says restricted, violate,
+    CHECKED BY — so nothing can match it and no weighting can rescue it."""
+    hp, slug = "Rules: constraints > Constraint rules", "Rules_constraints"
+    assert rr._title_coverage("forbid saving invalid data", hp, slug) == 0.0
+    assert rr._title_coverage("forbid saving invalid data", hp, slug,
+                              "validation, forbid, invalid") == 0.5
+    assert rr._title_coverage("validation", hp, slug, "validation, checks") == 1.0
+    # An article that declares none behaves exactly as before.
+    assert rr._title_coverage("navigator", "Rules: navigator > Navigator rules",
+                              "Rules_navigator", "") == 1.0
+
+
 def test_a_word_in_both_the_title_and_a_section_counts_once():
     """Never 1.0 + 0.4 — that would push coverage past 1 and the bonus past
     TITLE_MATCH_BOOST, and the bound is the whole defence."""

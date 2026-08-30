@@ -27,6 +27,7 @@ from settings import (
     SLUG,
     SECTION_ID,
     HEADING_PATH,
+    KEYWORDS,
     TOP_K,
     TYPED_TOP_K,
     TITLE_RERANK_CANDIDATE_K,
@@ -163,6 +164,7 @@ def _vs_search_for_source(
                 query,
                 str(attributes.get(HEADING_PATH) or ""),
                 str(attributes.get(SLUG) or ""),
+                str(attributes.get(KEYWORDS) or ""),
             ),
         ))
     # The store's ranking, nudged by how much of the query each heading path
@@ -197,7 +199,7 @@ def _words(text: str) -> set[str]:
     return {w for w in re.split(r"[^\w]+", text.replace("_", " ").casefold(), flags=re.UNICODE) if w}
 
 
-def _title_coverage(query: str, heading_path: str, slug: str) -> float:
+def _title_coverage(query: str, heading_path: str, slug: str, keywords: str = "") -> float:
     """What fraction of the query's meaningful words the article's heading path
     carries — the article's own title counted in full, the section titles under
     it at `HEADING_SECTION_WEIGHT`. 1.0 means the query names this article and
@@ -209,6 +211,13 @@ def _title_coverage(query: str, heading_path: str, slug: str) -> float:
     one word in four, not all of the words it happens to know. Weighting the
     matched words by rarity instead was measured and changed nothing, at the
     price of corpus statistics the server does not otherwise need.
+
+    `keywords` — the article's own frontmatter list — counts as its title.
+    That is the only answer to a query that names the right article in the
+    wrong words: asked to "forbid saving invalid data", the constraints
+    article shares NOT ONE word with the query (it says restricted, violate,
+    CHECKED BY), so no amount of matching can find it and no weighting can
+    rescue it. A `keywords: validation, forbid` on that article can.
 
     A query naming an article is where the vector search is at its weakest:
     asked for `navigator` it answered with the navigator article at rank 11 of
@@ -222,7 +231,7 @@ def _title_coverage(query: str, heading_path: str, slug: str) -> float:
     # "<article title> > <H2> > <H3>" — the head names the article, the tail
     # details it. The slug is the article's own name too, spelled for a URL.
     head, _, tail = heading_path.partition(" > ")
-    title = _words(head) | _words(slug)
+    title = _words(head) | _words(slug) | _words(keywords)
     # A word in BOTH the title and a section counts once, at the title's full
     # weight — never 1.0 + 0.4. That is what keeps coverage within [0, 1] and
     # the bonus within TITLE_MATCH_BOOST.

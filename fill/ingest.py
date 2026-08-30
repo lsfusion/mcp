@@ -525,6 +525,10 @@ def _section_attributes(
         "section_name": s.section_name,
         "heading_path": s.heading_path,
         "source_url": s.source_url,
+        # Present only when the article declares keywords: adding an empty
+        # one to every file would rewrite the attribute set of the whole
+        # corpus for nothing.
+        **({"keywords": s.keywords} if s.keywords else {}),
         "section_payload_hash": s.section_payload_hash,
         "source_file": source_file,
         "file_hash": file_hash,

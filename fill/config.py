@@ -25,6 +25,12 @@ SLUG_RE = re.compile(r"^[A-Za-z0-9_\-=.]+$")
 # carried by other identity attributes (see plan §"Attribute length validation").
 SLUG_MAX_LEN = 256
 
+# Length cap on an article's joined `keywords` — it rides in a vector-store
+# attribute (values are length-bounded there) and is prepended to every chunk
+# of the article, so it is paid for once per chunk. A list long enough to hit
+# this has stopped being a list of keywords.
+KEYWORDS_MAX_LEN = 256
+
 # Verified against live https://docs.lsfusion.org as of 2026-05-14:
 #   /AGGR_operator           → 301 → /AGGR_operator/             → 200
 #   /Aggregations            → 301 → /Aggregations/              → 200

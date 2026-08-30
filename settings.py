@@ -24,6 +24,10 @@ SLUG = "slug"
 # file ("Rules: navigator > Navigator rules"; see fill/ingest.py:_section_attributes).
 # It is what a query is matched against for the title rerank.
 HEADING_PATH = "heading_path"
+# The article's own `keywords` frontmatter — the words a reader searches for
+# that its title does not use ("validation" for an article titled
+# "constraints"). Stamped by fill/ingest.py only on articles that declare any.
+KEYWORDS = "keywords"
 
 # Attribute key under which the stable chunk id is stored on each VS file
 # ("{slug}::{kebab-section}", written for every uploaded section by

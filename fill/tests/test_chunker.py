@@ -10,6 +10,7 @@ import pytest
 
 from fill.chunker import (
     MAX_SECTION_TOKENS,
+    _keywords,
     OPENAI_CHUNK_LIMIT,
     Section,
     chunk_md,
@@ -740,3 +741,57 @@ def test_part_NN_secondary_split_is_not_merged(tmp_path):
         assert not (
             last_seg.startswith("part-") and "." in last_seg
         ), f"unexpected merge of part-NN: {s.section_id}"
+
+
+# ───────────────────────── keywords (article aliases) ────────────────────────
+
+
+def test_keywords_reach_the_payload_and_the_hash(tmp_path):
+    """An article states the words a reader searches for that its own title
+    does not use. They ride in the PAYLOAD, not only in an attribute, because
+    the store's ranking is visibly pulled by shared words — a keyword only the
+    local rerank could see would leave the semantic leg as blind as it is."""
+    p = write(tmp_path, "Rules_constraints.md", dedent("""\
+        ---
+        title: 'Rules: constraints'
+        keywords: [validation, forbid, invalid]
+        ---
+
+        ## Constraint rules
+
+        Body.
+        """))
+    [sec] = chunk_md(p, "rules", "Rules_constraints")
+    assert sec.keywords == "validation, forbid, invalid"
+    assert "keywords: validation, forbid, invalid" in sec.payload
+    assert sec.payload.startswith("# rules: Rules: constraints > Constraint rules\n")
+
+
+def test_an_article_without_keywords_is_byte_identical_to_before(tmp_path):
+    """The whole corpus must not re-index because the field was added. No
+    keywords ⇒ the payload and the hash are exactly what they always were."""
+    body = dedent("""\
+        ---
+        title: 'Rules: constraints'
+        ---
+
+        ## Constraint rules
+
+        Body.
+        """)
+    [sec] = chunk_md(write(tmp_path, "a.md", body), "rules", "Rules_constraints")
+    assert sec.keywords == ""
+    assert sec.payload == "# rules: Rules: constraints > Constraint rules\n\nBody."
+    # And declaring keywords DOES change the hash, so those articles re-index.
+    [with_kw] = chunk_md(
+        write(tmp_path, "b.md", body.replace("---\n\n", "keywords: [validation]\n---\n\n", 1)),
+        "rules", "Rules_constraints")
+    assert with_kw.section_payload_hash != sec.section_payload_hash
+
+
+def test_keywords_accepts_what_a_human_writes():
+    assert _keywords(["validation", "checks"]) == "validation, checks"
+    assert _keywords("validation, checks") == "validation, checks"
+    assert _keywords(["", "a", "a", " b "]) == "a, b"      # blanks and repeats dropped
+    assert _keywords(None) == "" and _keywords([]) == "" and _keywords(42) == ""
+    assert len(_keywords(["x" * 400])) <= 256
