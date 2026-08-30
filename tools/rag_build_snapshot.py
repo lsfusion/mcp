@@ -18,6 +18,7 @@ import logging
 import os
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -52,7 +53,8 @@ def _corpus_revision(platform_root: Path) -> str:
         return "unknown"
 
 
-def build(platform_root: Path, out: Path, client: OpenAI) -> dict:
+def build(platform_root: Path, out: Path, client: OpenAI,
+          corpus_revision: str | None = None) -> dict:
     docs_root = platform_root / DOCS_SUBDIR
     if not docs_root.is_dir():
         raise FileNotFoundError(f"docs root not found: {docs_root}")
@@ -93,7 +95,10 @@ def build(platform_root: Path, out: Path, client: OpenAI) -> dict:
 
     manifest = {
         "embedding_model": EMBEDDING_MODEL,
-        "corpus_revision": _corpus_revision(platform_root),
+        # Given by the caller when it knows better than a `git` we may not have
+        # (the build runs in a container without one).
+        "corpus_revision": corpus_revision or _corpus_revision(platform_root),
+        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "chunker_version": CHUNKER_VERSION,
         "glossary_version": GLOSSARY_VERSION,
         "prefix_version": PREFIX_VERSION,
@@ -109,6 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--platform-root", type=Path, required=True,
                    help="checkout of lsfusion/platform (the docs live under docs/)")
     p.add_argument("--out", type=Path, required=True, help="snapshot file to write")
+    p.add_argument("--corpus-revision", default=None,
+                   help="the docs commit this is built from; read from git when omitted")
     p.add_argument("-v", "--verbose", action="store_true")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
@@ -118,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         log.error("OPENAI_API_KEY is not set")
         return EXIT_SETUP_ERROR
     try:
-        build(args.platform_root, args.out, OpenAI(api_key=key))
+        build(args.platform_root, args.out, OpenAI(api_key=key), args.corpus_revision)
     except FileNotFoundError as e:
         log.error("%s", e)
         return EXIT_SETUP_ERROR

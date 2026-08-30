@@ -9,6 +9,7 @@ exclusion, `exclude_ids` applied before the cut).
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -54,7 +55,8 @@ def snapshot(tmp_path, monkeypatch):
     vectors = np.stack([_unit(dim, i) for i in range(len(rows))])
     path = tmp_path / "corpus.npz"
     write(path, rows=rows, vectors=vectors,
-          manifest={"embedding_model": settings.EMBEDDING_MODEL, "corpus_revision": "deadbeef"})
+          manifest={"embedding_model": settings.EMBEDDING_MODEL, "corpus_revision": "deadbeef",
+                    "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
     monkeypatch.setattr(li, "SNAPSHOT_PATH", str(path))
     li.reset_for_tests()
     yield path
@@ -135,6 +137,27 @@ def test_texts_that_do_not_match_the_manifest_are_refused(tmp_path):
     _tamper(path, lambda meta: meta.update({"texts": ["tampered"]}))
     with pytest.raises(ValueError, match="digest"):
         load(path, expect_model=settings.EMBEDDING_MODEL, expect_dimensions=dim)
+
+
+def test_an_old_snapshot_is_used_but_says_so(snapshot, monkeypatch, caplog):
+    """Age is a warning, not a refusal: a stale index still answers, and taking
+    retrieval down for a weekend over a docs change would be the worse failure.
+    But it must be visible — a silently stale index quotes documentation that
+    has moved on."""
+    _tamper(snapshot, lambda meta: meta["manifest"].update(
+        {"built_at": "2020-01-01T00:00:00+00:00"}))
+    li.reset_for_tests()
+    with caplog.at_level("WARNING"):
+        assert li.get() is not None
+    assert "days old" in caplog.text
+
+
+def test_a_snapshot_with_no_build_time_is_flagged(snapshot, monkeypatch, caplog):
+    _tamper(snapshot, lambda meta: meta["manifest"].pop("built_at", None))
+    li.reset_for_tests()
+    with caplog.at_level("WARNING"):
+        assert li.get() is not None
+    assert "no build time" in caplog.text
 
 
 def test_an_empty_corpus_is_never_written(tmp_path):

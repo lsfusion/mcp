@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 
 from fill.snapshot import Snapshot, load
-from settings import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL, SNAPSHOT_PATH
+from settings import (
+    EMBEDDING_DIMENSIONS,
+    EMBEDDING_MODEL,
+    SNAPSHOT_MAX_AGE_DAYS,
+    SNAPSHOT_PATH,
+)
 
 log = logging.getLogger("local_index")
 
@@ -58,10 +64,34 @@ def get() -> Snapshot | None:
         for t in sorted(set(snap.source_types)):
             _by_branch[t] = np.array(
                 [i for i, s in enumerate(snap.source_types) if s == t], dtype=np.int64)
-        log.info("snapshot loaded: %d chunks, %s, revision %s, per branch %s",
+        log.info("snapshot loaded: %d chunks, %s, revision %s, built %s, per branch %s",
                  len(snap), snap.manifest.get("embedding_model"),
-                 snap.manifest.get("corpus_revision"), snap.manifest.get("chunks_per_branch"))
+                 snap.manifest.get("corpus_revision"), snap.manifest.get("built_at"),
+                 snap.manifest.get("chunks_per_branch"))
+        age = _age_days(snap)
+        if age is not None and age > SNAPSHOT_MAX_AGE_DAYS:
+            log.warning(
+                "snapshot is %.1f days old (built %s, revision %s) — the docs have "
+                "almost certainly moved since; the delivery job is not running",
+                age, snap.manifest.get("built_at"), snap.manifest.get("corpus_revision"))
+        elif age is None:
+            log.warning("snapshot carries no build time — it was built by an older "
+                        "builder, and its age cannot be checked")
         return _snapshot
+
+
+def _age_days(snap: Snapshot) -> float | None:
+    """How long ago this snapshot was built, or None if it does not say."""
+    built = snap.manifest.get("built_at")
+    if not built:
+        return None
+    try:
+        when = datetime.fromisoformat(built)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - when).total_seconds() / 86400.0
 
 
 def reset_for_tests() -> None:

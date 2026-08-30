@@ -145,6 +145,13 @@ RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "store")
 # narrow class.
 LOCAL_TITLE_MATCH_BOOST = float(os.environ.get("LOCAL_TITLE_MATCH_BOOST", "0.05"))
 
+# How old a snapshot may get before every load says so. A stale index does not
+# fail — it answers from documentation that has moved on — so age is WARNED
+# about rather than refused: refusing would take retrieval down for a weekend
+# over a docs change that may not matter. The docs move on 2-3 days a week, so
+# a week without a rebuild means the delivery pipeline is broken, not idle.
+SNAPSHOT_MAX_AGE_DAYS = float(os.environ.get("SNAPSHOT_MAX_AGE_DAYS", "7"))
+
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===
 # Bump when the log envelope/record shape changes, or when a field's MEANING
 # does. v3: `top_score` is max(results[].score); in v2 it was the first hit's
