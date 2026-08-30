@@ -33,11 +33,15 @@ from settings import (
     TITLE_RERANK_CANDIDATE_K,
     TITLE_MATCH_STOPWORDS,
     TITLE_MATCH_BOOST,
+    LOCAL_TITLE_MATCH_BOOST,
     HEADING_SECTION_WEIGHT,
+    RETRIEVAL_BACKEND,
+    EMBEDDING_MODEL,
     QUERY_LOG_MAX_CHARS,
     ERROR_LOG_MAX_CHARS,
 )
 from tools.event_log import emit
+from tools import local_index
 
 
 class DocItem(BaseModel):
@@ -173,6 +177,53 @@ def _vs_search_for_source(
     hits.sort(key=_rank_key)
     return hits[:top_k]
 
+
+
+def _embed_query(query: str) -> "np.ndarray":
+    """The query as a unit vector, in the model the snapshot was built with."""
+    import numpy as np
+    v = client.embeddings.create(model=EMBEDDING_MODEL, input=[query]).data[0].embedding
+    arr = np.asarray(v, dtype=np.float32)
+    norm = float(np.linalg.norm(arr))
+    if norm == 0.0:
+        raise ValueError("embeddings returned a zero vector for the query")
+    return arr / norm
+
+
+def _local_search_for_source(query: str, query_vector, source_type: str,
+                             top_k: int, exclude_ids: list[str] | None) -> List[_Hit]:
+    """One branch of the LOCAL index — the same contract as its vector-store
+    twin: the branch's own quota, the top guidance article held back, and the
+    caller's `exclude_ids` dropped before the cut rather than after."""
+    combined = f"{SOURCETYPE_DOCUMENTATION}-{source_type}"
+    top_slug = GUIDANCE_TOP_SLUGS.get(source_type)
+    rows = local_index.search(
+        query_vector, source_type,
+        # A wider field than the quota, for the same reason the store call asks
+        # for one: the heading bonus can only reorder what it was given.
+        max(top_k, TITLE_RERANK_CANDIDATE_K),
+        exclude_ids=set(exclude_ids or ()),
+        exclude_slugs={top_slug} if top_slug else None,
+    )
+    hits = [_Hit(
+        id=r["section_id"],
+        source=combined,
+        text=r["text"],
+        score=r["score"],
+        # The local index has no vector-store identifiers; the section_id is
+        # the identity that matters and it is already in `id`.
+        file_id=None,
+        filename=None,
+        title_coverage=_title_coverage(query, r["heading_path"], r["slug"], r["keywords"]),
+    ) for r in rows]
+    hits.sort(key=_local_rank_key)
+    return hits[:top_k]
+
+
+def _local_rank_key(hit: "_Hit") -> float:
+    """Same rule as `_rank_key`, on the cosine's scale — see
+    LOCAL_TITLE_MATCH_BOOST for why the coefficient is not the same number."""
+    return -(hit.score + LOCAL_TITLE_MATCH_BOOST * hit.title_coverage)
 
 
 def _rank_key(hit: "_Hit") -> float:
@@ -314,21 +365,39 @@ def retrieve_docs_tool(
         quotas = TYPED_TOP_K if type else TOP_K
         n_requested = sum(quotas.get(_TYPE_TO_TOP_K[s], 0) for s in requested)
         hits: List[_Hit] = []
+        # The local index is preferred only when it is BOTH switched on and
+        # actually loaded, and only if the query embeds. Anything else — no
+        # snapshot, a refused snapshot, an embeddings outage — falls through to
+        # the vector store, which is how this server has always worked. The
+        # fallback is the whole reason the switch is safe to flip.
+        local = None
+        if RETRIEVAL_BACKEND == "local" and local_index.get() is not None:
+            try:
+                local = _embed_query(query)
+            except Exception as e:  # noqa: BLE001 — degrade to the store, do not fail the call
+                log.warning("local backend: could not embed the query (%s); "
+                            "serving this call from the vector store", e)
+        backend = "local" if local is not None else "store"
         for source_type in requested:
-            hits.extend(_vs_search_for_source(
-                query, source_type, quotas.get(_TYPE_TO_TOP_K[source_type], 0),
-                exclude_ids))
+            top_k = quotas.get(_TYPE_TO_TOP_K[source_type], 0)
+            if local is not None:
+                hits.extend(_local_search_for_source(
+                    query, local, source_type, top_k, exclude_ids))
+            else:
+                hits.extend(_vs_search_for_source(query, source_type, top_k, exclude_ids))
         # Ranked the same way across branches — sorting on score alone would
         # undo the per-branch promotion the moment two branches are merged.
-        hits.sort(key=_rank_key)
+        hits.sort(key=_local_rank_key if local is not None else _rank_key)
     except Exception as e:  # noqa: BLE001 — log the failed call, then re-raise unchanged
         _log_retrieval(query, type, n_requested, [], start,
-                       ok=False, error=e, exclude_ids=exclude_ids)
+                       ok=False, error=e, exclude_ids=exclude_ids,
+                       backend=locals().get("backend", "store"))  # may not be set yet if we failed early
         raise
     # Success path — log OUTSIDE the business `try` so a logging failure can never
     # land in the `except` (false ok=false) or turn a good retrieval into an error.
     # `_log_retrieval` is itself fully guarded and never raises.
-    _log_retrieval(query, type, n_requested, hits, start, ok=True, exclude_ids=exclude_ids)
+    _log_retrieval(query, type, n_requested, hits, start, ok=True,
+                   exclude_ids=exclude_ids, backend=backend)
     return RetrieveDocsOutput(
         docs=[DocItem(id=h.id, source=h.source, text=h.text, score=h.score) for h in hits]
     )
@@ -351,6 +420,7 @@ def _log_retrieval(
     start: float,
     *,
     ok: bool,
+    backend: str = "store",
     error: BaseException | None = None,
     exclude_ids: list[str] | None = None,
 ) -> None:
@@ -370,6 +440,9 @@ def _log_retrieval(
             # keeps no chunk identity the caller did not get from us anyway.
             "n_excluded": len(exclude_ids or []),
             "n_results": len(hits),
+            # Which backend served this call — the canary needs to be able to
+            # tell the two apart in the same log stream.
+            "backend": backend,
             # The MAX store score, not the first hit's: the list is ranked by
             # score plus the title bonus, so the head of it need not be the
             # best-scoring chunk. Gap analytics compare stores, not orders.

@@ -5,9 +5,13 @@ import os
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 RAG_VECTOR_STORE_ID = os.environ.get("RAG_VECTOR_STORE_ID", "")
 
-# Embedding model (kept for potential future direct-embedding flows;
-# OpenAI vector_stores.search handles embedding server-side).
+# The model every chunk AND every query is embedded with when the local index
+# serves retrieval. Both sides must use the same one — a snapshot built by
+# another model is refused at load, because mixing them does not fail loudly,
+# it just returns nonsense. (The vector store embeds server-side and ignores
+# this.)
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "3072"))
 
 # Attribute key under which sourceType is stored on each VS file
 # (chunker writes the bare category value "language" / "paradigm" / "how-to" /
@@ -118,6 +122,28 @@ HEADING_SECTION_WEIGHT = 0.4
 TITLE_MATCH_STOPWORDS = frozenset({
     "a", "an", "and", "brief", "for", "in", "of", "on", "rules", "the", "to", "with",
 })
+
+# === Local dense index (fill/snapshot.py, tools/local_index.py) ===
+# Where the server looks for the snapshot. Empty (or a missing file) => the
+# local index is simply not used and retrieval goes to the vector store, which
+# is the behaviour this server has always had.
+SNAPSHOT_PATH = os.environ.get("RAG_SNAPSHOT_PATH", "/data/snapshot/corpus.npz")
+
+# Which backend serves retrieve_docs: "store" (OpenAI Vector Store, the way it
+# has always worked) or "local" (the snapshot). Canary switch — the code ships
+# first and defaults to the old path; flipping this env var is the rollout, and
+# flipping it back is the rollback. "local" still falls back to the store when
+# the snapshot is missing or the embedding call fails.
+RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "store")
+
+# The heading bonus again, on the LOCAL backend's scale. TITLE_MATCH_BOOST is
+# 0.3 because that is what moves a vector-store score; a cosine's neighbours sit
+# much closer together, and the same 0.3 there would let a heading match
+# overturn the ranking outright. Measured on the local index: at 0.05 one-word
+# area names go from 9 first places in 12 to 11, while 120 real queries move by
+# +0.003 nDCG@5 (interval [-0.004, +0.009]) — i.e. it costs nothing and saves a
+# narrow class.
+LOCAL_TITLE_MATCH_BOOST = float(os.environ.get("LOCAL_TITLE_MATCH_BOOST", "0.05"))
 
 # === Structured event logging (feedback loop, Phase A; see MCP-FEEDBACK-PLAN.md) ===
 # Bump when the log envelope/record shape changes, or when a field's MEANING
