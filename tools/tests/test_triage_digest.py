@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import tools.triage_digest as td
 
@@ -90,12 +91,15 @@ def test_empty_dir_is_graceful(tmp_path):
 
 
 def test_days_window_filters(tmp_path):
-    _write(tmp_path, "reports-20260530.jsonl", [
-        _rep("RECENT", ts="2026-05-30T10:00:00.000Z"),
+    """The window is relative to NOW, so the "recent" row has to be written
+    relative to now as well. A fixed date passes on the day it is written and
+    fails a month later, which is how this test spent a summer red."""
+    recent = datetime.now(timezone.utc) - timedelta(days=1)
+    _write(tmp_path, f"reports-{recent:%Y%m%d}.jsonl", [
+        _rep("RECENT", ts=recent.isoformat().replace("+00:00", "Z")),
         _rep("OLD", ts="2020-01-01T00:00:00.000Z"),
     ])
-    _write(tmp_path, "retrieval-20260530.jsonl", [_retr("q")])
-    # days filter is relative to now; 2020 row must drop, 2026-05-30 stays only if within window.
+    _write(tmp_path, f"retrieval-{recent:%Y%m%d}.jsonl", [_retr("q")])
     out_all = td.build_digest(str(tmp_path), None, 0.5, 15)
     assert "Feedback clusters (2 reports)" in out_all
     out_recent = td.build_digest(str(tmp_path), 30, 0.5, 15)  # 30d window drops the 2020 row
