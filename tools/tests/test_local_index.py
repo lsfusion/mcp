@@ -9,6 +9,8 @@ exclusion, `exclude_ids` applied before the cut).
 from __future__ import annotations
 
 import json
+import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -158,6 +160,32 @@ def test_a_snapshot_with_no_build_time_is_flagged(snapshot, monkeypatch, caplog)
     with caplog.at_level("WARNING"):
         assert li.get() is not None
     assert "no build time" in caplog.text
+
+
+def test_a_republished_snapshot_is_picked_up_without_a_restart(snapshot, monkeypatch):
+    """The ingest publishes one on every docs change; restarting the server for
+    each would drop every connected MCP session."""
+    dim = settings.EMBEDDING_DIMENSIONS
+    assert li.get().manifest["corpus_revision"] == "deadbeef"
+    write(snapshot,
+          rows=[{"section_id": "New::x", "sourceType": "rules", "slug": "New",
+                 "heading_path": "New > x", "keywords": "", "text": "fresh"}],
+          vectors=np.stack([_unit(dim, 0)]),
+          manifest={"embedding_model": settings.EMBEDDING_MODEL, "corpus_revision": "cafe",
+                    "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    os.utime(snapshot, (time.time() + 1, time.time() + 1))  # a fresh mtime, as a copy would have
+    assert li.get().manifest["corpus_revision"] == "cafe"
+    assert [h["section_id"] for h in li.search(_unit(dim, 0), "rules", 3)] == ["New::x"]
+
+
+def test_a_bad_republish_keeps_the_snapshot_already_loaded(snapshot, monkeypatch, caplog):
+    """A corpus one generation old beats none at all."""
+    assert li.get() is not None
+    _tamper(snapshot, lambda meta: meta["manifest"].update({"embedding_model": "other"}))
+    os.utime(snapshot, (time.time() + 1, time.time() + 1))
+    with caplog.at_level("ERROR"):
+        assert li.get().manifest["corpus_revision"] == "deadbeef"
+    assert "keeping the one already loaded" in caplog.text
 
 
 def test_an_empty_corpus_is_never_written(tmp_path):

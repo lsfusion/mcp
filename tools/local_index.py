@@ -36,31 +36,60 @@ log = logging.getLogger("local_index")
 _lock = threading.Lock()
 _snapshot: Snapshot | None = None
 _tried = False
+_stamp: tuple[float, int] | None = None  # (mtime, size) of the file we loaded
 _by_branch: dict[str, np.ndarray] = {}  # sourceType -> row indices into the snapshot
 
 
+def _stamp_of(path: Path) -> tuple[float, int] | None:
+    try:
+        st = path.stat()
+        return (st.st_mtime, st.st_size)
+    except OSError:
+        return None
+
+
 def get() -> Snapshot | None:
-    """The loaded snapshot, or None if there isn't a usable one. Cheap after
-    the first call; safe to call from several threads."""
-    global _snapshot, _tried
-    if _snapshot is not None or _tried:
+    """The loaded snapshot, or None if there isn't a usable one. Safe to call
+    from several threads.
+
+    A new snapshot is picked up WITHOUT a restart: the ingest job publishes one
+    on every docs change (2-3 days a week), and restarting the server for each
+    would drop every connected MCP session. So each call stats the file — one
+    syscall — and reloads when it has been replaced. A reload that fails keeps
+    the snapshot already in memory: a corpus one generation old beats none.
+    """
+    global _snapshot, _tried, _stamp
+    path = Path(SNAPSHOT_PATH)
+    stamp = _stamp_of(path) if SNAPSHOT_PATH else None
+    if (_snapshot is not None or _tried) and stamp == _stamp:
         return _snapshot
     with _lock:
-        if _snapshot is not None or _tried:
+        stamp = _stamp_of(path) if SNAPSHOT_PATH else None
+        if (_snapshot is not None or _tried) and stamp == _stamp:
             return _snapshot
         _tried = True
-        path = Path(SNAPSHOT_PATH)
-        if not SNAPSHOT_PATH or not path.is_file():
-            log.info("no snapshot at %s — retrieval will use the vector store", SNAPSHOT_PATH)
-            return None
+        if stamp is None:
+            if _snapshot is None:
+                log.info("no snapshot at %s — retrieval will use the vector store",
+                         SNAPSHOT_PATH)
+            else:
+                log.warning("snapshot %s has disappeared — keeping the one already "
+                            "loaded", SNAPSHOT_PATH)
+            return _snapshot
         try:
             snap = load(path, expect_model=EMBEDDING_MODEL,
                         expect_dimensions=EMBEDDING_DIMENSIONS)
         except Exception as e:  # noqa: BLE001 — a bad artifact must not take the server down
-            log.error("snapshot %s refused (%s) — retrieval falls back to the vector store",
-                      path, e)
-            return None
+            log.error("snapshot %s refused (%s) — %s", path, e,
+                      "keeping the one already loaded" if _snapshot is not None
+                      else "retrieval falls back to the vector store")
+            # Remember the stamp anyway, or every single call re-reads 23 MB
+            # just to fail again on the same bad file.
+            _stamp = stamp
+            return _snapshot
         _snapshot = snap
+        _stamp = stamp
+        _by_branch.clear()
         for t in sorted(set(snap.source_types)):
             _by_branch[t] = np.array(
                 [i for i, s in enumerate(snap.source_types) if s == t], dtype=np.int64)
@@ -96,9 +125,9 @@ def _age_days(snap: Snapshot) -> float | None:
 
 def reset_for_tests() -> None:
     """Drop the cached snapshot. Tests only — production loads once and keeps it."""
-    global _snapshot, _tried
+    global _snapshot, _tried, _stamp
     with _lock:
-        _snapshot, _tried = None, False
+        _snapshot, _tried, _stamp = None, False, None
         _by_branch.clear()
 
 
