@@ -44,8 +44,8 @@ def _record_calls(monkeypatch) -> list[dict]:
     return seen
 
 
-def test_allowed_types_are_the_three_searchable_plus_the_two_moved():
-    assert set(rr.ALLOWED_TYPES) == {"language", "paradigm", "how-to", "brief", "rules"}
+def test_allowed_types_are_the_three_reference_branches():
+    assert set(rr.ALLOWED_TYPES) == {"language", "paradigm", "how-to"}
 
 
 def test_omitted_type_searches_every_searchable_branch(monkeypatch):
@@ -56,11 +56,8 @@ def test_omitted_type_searches_every_searchable_branch(monkeypatch):
     assert len(seen) == 3
 
 
-def test_default_types_is_the_searchable_branches_only():
-    # The moved branches are accepted, never searched — including by the
-    # untyped call, which is the one an assistant makes when it is unsure.
-    assert set(rr.DEFAULT_TYPES) == set(rr.SEARCHABLE_TYPES)
-    assert not set(rr.DEFAULT_TYPES) & set(rr.MOVED_TYPES)
+def test_default_types_is_allowed_types():
+    assert set(rr.DEFAULT_TYPES) == set(rr.ALLOWED_TYPES)
 
 
 def _DELETED_test_guidance_branches_exclude_only_their_top_article():
@@ -85,42 +82,25 @@ def test_non_guidance_branches_filter_by_source_type_only():
 
 
 def test_specific_type_searches_only_that_branch(monkeypatch):
-    for t in rr.SEARCHABLE_TYPES:
+    for t in rr.ALLOWED_TYPES:
         calls = _record_calls(monkeypatch)
         rr.retrieve_docs_tool("anything", type=t)
         assert [c["source_type"] for c in calls] == [t]
 
 
-def test_a_moved_branch_searches_nothing_and_says_where_it_went(monkeypatch):
-    # The failure this replaces: an empty `docs: []` is indistinguishable, to a
-    # model, from "no rules apply to this area".
-    for branch in rr.MOVED_TYPES:
+def test_a_guidance_branch_is_rejected_by_name(monkeypatch):
+    # Not a silent empty result: an empty `docs: []` is indistinguishable, to a
+    # model, from "no rules apply to this area". The error names the branches
+    # that do exist here, and the tool description says where the other two went.
+    for branch in ("rules", "brief"):
         calls = _record_calls(monkeypatch)
-        out = rr.retrieve_docs_tool("events", type=branch)
-        assert calls == [], f"{branch} must not be searched"
-        assert len(out.docs) == 1
-        text = out.docs[0].text
-        assert "MOVED" in text and "retrieved NOTHING" in text
-        assert "Nothing was ruled out" in text
-        assert f"lsfusion_get_guidance({branch}='<name>')" in text
-        # The map travels with the redirect, so the follow-up needs no round trip.
-        for area in ("logic", "view", "physical", "integration"):
-            assert f"`{area}`" in text
-
-
-def test_the_redirect_repeats_the_queries_it_did_not_run(monkeypatch):
-    _record_calls(monkeypatch)
-    out = rr.retrieve_docs_tool(["events", "WHEN"], type="rules")
-    assert "'events', 'WHEN'" in out.docs[0].text
-
-
-def test_bad_type_raises():
-    with pytest.raises(ValueError):
-        rr.retrieve_docs_tool("anything", type="bogus")
+        with pytest.raises(ValueError):
+            rr.retrieve_docs_tool("events", type=branch)
+        assert calls == []
 
 
 def test_every_searchable_type_has_a_top_k_mapping():
-    for t in rr.SEARCHABLE_TYPES:
+    for t in rr.ALLOWED_TYPES:
         assert t in rr._TYPE_TO_TOP_K
 
 
@@ -263,7 +243,7 @@ def test_every_branch_gets_the_same_quota_typed_or_not(monkeypatch):
     # are not retrieved any more, and for the branches that remain both tables
     # held the same number — so a typed call and an untyped one now spend the
     # same per branch, and that is the invariant worth pinning.
-    for branch in rr.SEARCHABLE_TYPES:
+    for branch in rr.ALLOWED_TYPES:
         calls = _record_calls(monkeypatch)
         rr.retrieve_docs_tool("q", type=branch)
         assert [c["top_k"] for c in calls] == [3]
@@ -273,7 +253,7 @@ def test_untyped_search_requests_three_per_branch(monkeypatch):
     calls = _record_calls(monkeypatch)
     rr.retrieve_docs_tool("q")
     assert [c["top_k"] for c in calls] == [3] * 3
-    assert {c["source_type"] for c in calls} == set(rr.SEARCHABLE_TYPES)
+    assert {c["source_type"] for c in calls} == set(rr.ALLOWED_TYPES)
 
 
 def _DELETED_test_typed_quotas_can_return_a_whole_area_article():

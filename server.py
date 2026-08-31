@@ -36,8 +36,8 @@ def lsfusion_retrieve_docs(
         Field(description="One short technical query, or a list of DISTINCT queries for independent needs already known before this call. Batch only lookups that do not depend on one another; when one answer can determine or refine the next query, call the tool again instead. Do not batch alternative phrasings of one need. In a batch, `type` and `exclude_ids` apply to every query, all queries share one result cap, a chunk answering two of them is returned once, and each result names the query it is credited to. Name the keywords of what you need, not the topic: `NEWSESSION APPLY canceled nested session`, not `sessions`. A bare noun is what every article in a branch is about, and the search answers it with whichever one is closest to that whole topic; keywords name the one you want. Semantic match, not literal: rephrase rather than retry the same query if results are weak."),
     ],
     type: Annotated[
-        Literal["language", "paradigm", "how-to", "brief", "rules"] | None,
-        Field(default=None, description="Optional sourceType filter (the docs folder); in a batch it applies to every query. Omit (or pass null) to search all three reference branches and merge. `language` = syntax / operator reference; `paradigm` = concepts / abstractions; `how-to` = task recipes. `brief` and `rules` are still accepted but no longer searched: they are read whole, by name, with `lsfusion_get_guidance` — passing one here returns a pointer to that tool, not documentation."),
+        Literal["language", "paradigm", "how-to"] | None,
+        Field(default=None, description="Optional sourceType filter (the docs folder); in a batch it applies to every query. Omit (or pass null) to search all three reference branches and merge. `language` = syntax / operator reference; `paradigm` = concepts / abstractions; `how-to` = task recipes. The `brief` and `rules` branches are not here at all: an area's capability map and its coding rules are read whole, by name, with `lsfusion_get_guidance`."),
     ] = None,
     exclude_ids: Annotated[
         list[str] | None,

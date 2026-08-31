@@ -224,3 +224,31 @@ def test_plugin_kotlin_wrapper_forwards_the_article_name():
     region = _brace_slice(text, "suspend fun getGuidance(")
     missing = sorted(p for p in GUIDANCE_PARAMS if p not in region)
     assert not missing, f"plugin McpToolset: getGuidance cannot name an article: {missing}"
+
+
+# --- reverse drift ---------------------------------------------------------
+#
+# Everything above is a SUBSET check: it catches "central added a field, the
+# proxy forgot it". The opposite direction — the proxy still advertising
+# something central dropped — is invisible to it, and this migration is exactly
+# that shape: `brief` and `rules` left the search corpus, and a proxy that keeps
+# offering them as `type` values invites a call the central server now rejects.
+# The value is checked where an enum value actually lives (`.put("<v>")` inside
+# the JSONArray), not as a bare token: both descriptions legitimately mention
+# the two branches in prose, to say where they went.
+def test_platform_retrieve_enum_no_longer_offers_the_guidance_branches():
+    region = _brace_slice(_need(PLATFORM), "JSONObject retrieveDocsDescriptor(")
+    still = [v for v in ("brief", "rules") if f'.put("{v}")' in region]
+    assert not still, f"platform MCPDispatcher: `type` still offers {still}"
+
+
+def test_plugin_java_retrieve_enum_no_longer_offers_the_guidance_branches():
+    region = _brace_slice(_need(PLUGIN_JAVA), "JSONObject buildRetrieveDocsToolDescriptor(")
+    still = [v for v in ("brief", "rules") if f'.put("{v}")' in region]
+    assert not still, f"plugin McpBaseService: `type` still offers {still}"
+
+
+def test_central_no_longer_searches_the_guidance_branches():
+    # Vacuity guard for the two above.
+    from tools.rag_retrieve import ALLOWED_TYPES
+    assert not {"brief", "rules"} & set(ALLOWED_TYPES)

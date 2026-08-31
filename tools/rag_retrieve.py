@@ -208,35 +208,21 @@ def _local_search_for_source(query: str, query_vector, source_type: str,
     return hits[:top_k]
 
 
-SEARCHABLE_TYPES = (
+# The searchable corpus. `brief` and `rules` are NOT here: relevance in these
+# three branches is probabilistic, so ranked excerpts are the right answer,
+# whereas a rules article is only useful whole and a top-N retrieval cannot
+# report what it withheld — an assistant handed 3 of an article's 4 chunks has
+# no way to learn a 4th existed. Those two are read by name, entire, through
+# `get_guidance`, and asking for them here is now an error naming the three
+# that remain.
+ALLOWED_TYPES = (
     SOURCETYPE_DOCUMENTATION_LANGUAGE,
     SOURCETYPE_DOCUMENTATION_PARADIGM,
     SOURCETYPE_DOCUMENTATION_HOWTO,
 )
 
-# The two branches that LEFT the search corpus. Relevance in the branches above
-# is probabilistic, so ranked excerpts are the right answer; a rules article is
-# only useful whole, and a top-N retrieval cannot report what it withheld — an
-# assistant handed 3 of an article's 4 chunks has no way to learn the 4th
-# existed. They are read by name now, entire, through `get_guidance`.
-#
-# They stay ACCEPTED here rather than becoming a validation error, and the
-# reason is the clients: a tool schema is cached at connect time and mirrored by
-# hand in two other repositories, so callers will keep asking for these branches
-# for as long as a release cycle takes. An error tells such a caller nothing it
-# can act on, and an empty result is worse — indistinguishable from "no rules
-# apply to this area", which is the exact belief this whole change exists to
-# prevent. So the call succeeds and returns one item that says where the branch
-# went and how to ask for it.
-MOVED_TYPES = (
-    SOURCETYPE_DOCUMENTATION_BRIEF,
-    SOURCETYPE_DOCUMENTATION_RULES,
-)
-
-ALLOWED_TYPES = SEARCHABLE_TYPES + MOVED_TYPES
-
 # Branches searched when `type` is omitted.
-DEFAULT_TYPES = SEARCHABLE_TYPES
+DEFAULT_TYPES = ALLOWED_TYPES
 
 # `type` argument → TOP_K key
 _TYPE_TO_TOP_K = {
@@ -244,42 +230,6 @@ _TYPE_TO_TOP_K = {
     SOURCETYPE_DOCUMENTATION_PARADIGM: SOURCETYPE_DOC_PARADIGM,
     SOURCETYPE_DOCUMENTATION_HOWTO: SOURCETYPE_DOC_HOWTO,
 }
-
-
-# One item per moved branch, carrying the map with it so the follow-up call
-# needs no extra round trip. It is a synthetic document in a document channel,
-# which is not free — but the alternative is an empty `docs: []`, and an empty
-# success reads to a model as "there is nothing here", which for the `rules`
-# branch is the most expensive wrong belief available.
-_MOVED_TEXT = (
-    "> MOVED — the `{branch}` branch is no longer searched, and this call "
-    "retrieved NOTHING. Your quer{plural}: {queries}.\n"
-    "> Nothing was ruled out: no article was read, so this result says nothing "
-    "about whether {branch} material covers your area.\n"
-    "> These articles are now read WHOLE, one per call, with "
-    "`lsfusion_get_guidance({branch}='<name>')`. There are four:\n"
-    ">   `logic` — properties, actions, events, constraints, change sessions\n"
-    ">   `view` — forms, design, navigator, reports, internationalization\n"
-    ">   `physical` — tables, materializations, indexes, modules, migration\n"
-    ">   `integration` — data import, data export, calls in and out\n"
-    "> `lsfusion_get_guidance()` with no arguments returns the top article of "
-    "each branch, which carries the full map and, for `rules`, the point at "
-    "which reading each article stops being optional."
-)
-
-
-def _moved_branch_result(branch: str, queries: list[str]) -> RetrieveDocsOutput:
-    return RetrieveDocsOutput(docs=[DocItem(
-        id=f"guidance-moved-{branch}",
-        source=f"{SOURCETYPE_DOCUMENTATION}-{branch}",
-        score=0.0,
-        query=None,
-        text=_MOVED_TEXT.format(
-            branch=branch,
-            plural="ies were" if len(queries) > 1 else "y was",
-            queries=", ".join(repr(q) for q in queries),
-        ),
-    )])
 
 
 def retrieve_docs_tool(
@@ -315,8 +265,10 @@ def retrieve_docs_tool(
       * omitted / null — search all three reference branches (`language`,
         `paradigm`, `how-to`) with a per-branch quota and merge results by score.
       * one of `language` / `paradigm` / `how-to` — only that branch.
-      * `brief` / `rules` — accepted, but these branches left the search corpus:
-        the call returns one item naming the article reader instead.
+
+    The `brief` and `rules` branches are not searchable and are rejected here:
+    an area's capability map and its coding rules are read whole, by name, with
+    `get_guidance`.
 
     `exclude_ids` drops chunks by `DocItem.id` and likewise applies to the whole
     batch: pass back the ids already in context to page deeper instead of
@@ -347,8 +299,6 @@ def retrieve_docs_tool(
             raise ValueError(
                 f"type must be one of {ALLOWED_TYPES} or null/omitted, got {type!r}"
             )
-        if type in MOVED_TYPES:
-            return _moved_branch_result(type, queries)
         requested = (type,) if type else DEFAULT_TYPES
         quotas = TOP_K
         per_call = sum(quotas.get(_TYPE_TO_TOP_K[s], 0) for s in requested)
