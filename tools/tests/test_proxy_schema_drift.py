@@ -252,3 +252,49 @@ def test_central_no_longer_searches_the_guidance_branches():
     # Vacuity guard for the two above.
     from tools.rag_retrieve import ALLOWED_TYPES
     assert not {"brief", "rules"} & set(ALLOWED_TYPES)
+
+
+# --- the docs say the same thing as the tools ------------------------------
+#
+# Two ways the published guidance can quietly contradict the server, both hit
+# during this migration. The instructions kept telling the assistant to make a
+# call that now raises — rule B.2 of the top rules article, the literal
+# documentation-lookup procedure, still said
+# `lsfusion_retrieve_docs(type='rules', query='<area>')`. And the map is
+# hand-maintained beside the article files, so an article nothing points at is
+# invisible (which is what started all of this) and a mapped article that does
+# not exist is a guaranteed miss on a name the assistant read from the map.
+_GUIDANCE_DOCS = _PLATFORM_ROOT / "docs"
+
+
+def _guidance_articles(branch: str) -> set[str]:
+    d = _GUIDANCE_DOCS / branch / "en"
+    if not d.is_dir():
+        pytest.skip(f"guidance docs not present: {d}")
+    prefix = branch.capitalize() + "_"
+    return {p.stem[len(prefix):] for p in d.glob(f"{prefix}*.md")}
+
+
+def _mapped_names(branch: str) -> set[str]:
+    top = (_GUIDANCE_DOCS / branch / "en" / f"{branch.capitalize()}.md").read_text(encoding="utf-8")
+    # First column of the map table: | `name` | ...
+    return set(re.findall(r"^\|\s*`([a-z0-9_]+)`\s*\|", top, re.M))
+
+
+@pytest.mark.parametrize("branch", ["rules", "brief"])
+def test_the_map_lists_exactly_the_articles_that_exist(branch):
+    mapped, actual = _mapped_names(branch), _guidance_articles(branch)
+    assert mapped == actual, (
+        f"{branch}: map lists {sorted(mapped)}, folder has {sorted(actual)} — "
+        f"an unmapped article is invisible, a mapped one that is missing is a dead name")
+
+
+@pytest.mark.parametrize("branch", ["rules", "brief"])
+def test_no_guidance_article_still_points_at_the_retired_lookup(branch):
+    d = _GUIDANCE_DOCS / branch
+    if not d.is_dir():
+        pytest.skip(f"guidance docs not present: {d}")
+    stale = [str(p.relative_to(_GUIDANCE_DOCS)) for p in d.rglob("*.md")
+             if "type='rules'" in p.read_text(encoding="utf-8")
+             or "type='brief'" in p.read_text(encoding="utf-8")]
+    assert not stale, f"these still instruct a call the server rejects: {stale}"
