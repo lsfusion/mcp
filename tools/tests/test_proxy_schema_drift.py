@@ -27,6 +27,7 @@ import re
 import pytest
 
 from tools.feedback import FeedbackOutput, FeedbackReport
+from tools.guidance import BRANCH_PREFIX
 from tools.rag_retrieve import RetrieveDocsOutput, retrieve_docs_tool
 
 # tools/tests/ -> tools -> mcp -> <aggregate>
@@ -184,3 +185,42 @@ def test_plugin_kotlin_wrapper_forwards_the_exclusion_list():
     region = _brace_slice(text, "suspend fun retrieveDocs(")
     assert "excludeIds" in region, "plugin McpToolset: retrieveDocs takes no exclusion list"
     assert '"exclude_ids"' in region, "plugin McpToolset: exclusion list never reaches the wire"
+
+
+# --- get_guidance ----------------------------------------------------------
+#
+# `get_guidance` had no guard here at all, because for its whole life it took no
+# parameters and there was nothing to drift. Now it takes two, and they must be
+# DECLARED in every proxy even though all of them forward args verbatim: each
+# descriptor sets `additionalProperties: false`, so a parameter a proxy does not
+# declare is one a strict client cannot pass. A proxy that misses them silently
+# offers only the zero-argument call, and the per-area articles — the whole
+# point of the redesign — stay unreachable through it.
+GUIDANCE_PARAMS = set(BRANCH_PREFIX)
+
+
+def test_central_guidance_contract_is_the_two_branches():
+    # Same vacuity guard as above: if the branches vanish, the checks below pass
+    # for the wrong reason.
+    assert GUIDANCE_PARAMS == {"rules", "brief"}
+
+
+def test_platform_guidance_descriptor_declares_both_branches():
+    text = _need(PLATFORM)
+    region = _brace_slice(text, "JSONObject getGuidanceDescriptor(")
+    _assert_declares(region, GUIDANCE_PARAMS, "platform MCPDispatcher (get_guidance)")
+
+
+def test_plugin_java_guidance_descriptor_declares_both_branches():
+    text = _need(PLUGIN_JAVA)
+    region = _brace_slice(text, "JSONObject buildGetGuidanceToolDescriptor(")
+    _assert_declares(region, GUIDANCE_PARAMS, "plugin McpBaseService (get_guidance)")
+
+
+def test_plugin_kotlin_wrapper_forwards_the_article_name():
+    # The Kotlin path declares its schema through annotations on the function,
+    # so the parameters and the wire names both live at the call site.
+    text = _need(PLUGIN_KT)
+    region = _brace_slice(text, "suspend fun getGuidance(")
+    missing = sorted(p for p in GUIDANCE_PARAMS if p not in region)
+    assert not missing, f"plugin McpToolset: getGuidance cannot name an article: {missing}"
