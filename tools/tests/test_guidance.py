@@ -16,6 +16,15 @@ import tools.guidance as g
 
 
 class _FakeResp(io.BytesIO):
+    def __init__(self, data, url="https://docs.lsfusion.org/x.md"):
+        super().__init__(data)
+        self._url = url
+
+    def geturl(self):
+        # By default the response landed where it was asked for; a test that
+        # simulates a redirect passes a different url.
+        return self._url
+
     def __enter__(self):
         return self
 
@@ -74,17 +83,35 @@ def test_version_is_stable_and_content_derived():
 
 def test_stamped_guidance_heads_body_with_marker_and_notice(monkeypatch):
     monkeypatch.setattr(
-        g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(b"BODY")
+        g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(b"BODY", url)
     )
 
     out = g.stamped_guidance(["http://a/Brief.md"])
 
     body = "BODY"
     marker = f"<!-- lsfusion-guidance version: {g.guidance_version(body)} -->"
-    assert out == f"{marker}\n{g.GUIDANCE_NOTICE}\n\n{body}"
+    assert out.startswith(f"{marker}\n{g.GUIDANCE_NOTICE}\n\n")
     # Version stamps the BODY alone, so it matches an independent hash of the docs.
     assert g.guidance_version(body) in out
-    assert out.endswith(body)
+
+
+def test_the_start_of_session_call_fences_each_top_article(monkeypatch):
+    """The call that needs the fence most: it is made on every task, it is the
+    largest result this server returns, and it carries the maps — so a silent
+    truncation here costs the assistant not one article but its knowledge that
+    the others exist."""
+    monkeypatch.setattr(
+        g.urllib.request, "urlopen",
+        lambda url, timeout=None: _FakeResp(f"body of {url}".encode(), url),
+    )
+
+    out = g.stamped_guidance()
+
+    for branch, url in (("brief", g.BRIEF_URL), ("rules", g.RULES_URL)):
+        body = f"body of {url}"
+        assert f"=== BEGIN lsfusion {branch}/top | rev {g.guidance_version(body)} | chars {len(body)} ===" in out
+        assert f"=== END lsfusion {branch}/top | chars {len(body)} ===" in out
+    assert out.rstrip().endswith("===")
 
 
 def test_server_instructions_fit_under_client_truncation_cap():
@@ -195,7 +222,7 @@ def test_other_failures_propagate_and_are_never_dressed_up_as_absence(monkeypatc
 def test_article_is_fenced_and_the_end_fence_terminates_the_result(monkeypatch):
     body = "RULE BODY"
     monkeypatch.setattr(
-        g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(body.encode())
+        g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(body.encode(), url)
     )
 
     out = g.read_article("rules", "logic")
@@ -212,3 +239,24 @@ def test_article_is_fenced_and_the_end_fence_terminates_the_result(monkeypatch):
 def test_unknown_branch_is_a_programming_error():
     with pytest.raises(ValueError):
         g.article_slug("howto", "logic")
+
+
+def test_a_redirect_is_not_the_article_that_was_asked_for(monkeypatch):
+    """Sanitizing the name secures the URL we ASK for, not the page we get.
+    urlopen follows redirects silently, so without this a moved slug could hand
+    back a different article — the other branch's, even — framed as complete."""
+    monkeypatch.setattr(
+        g.urllib.request, "urlopen",
+        lambda url, timeout=None: _FakeResp(b"someone else's article",
+                                            "https://docs.lsfusion.org/Brief_logic.md"))
+
+    out = g.read_article("rules", "logic")
+    assert "NO SUCH GUIDANCE ARTICLE" in out and "redirected" in out
+    assert "someone else's article" not in out
+
+
+def test_a_soft_404_page_is_not_served_as_an_article(monkeypatch):
+    monkeypatch.setattr(g.urllib.request, "urlopen",
+                        lambda url, timeout=None: _FakeResp(b"<!doctype html><h1>Not found</h1>", url))
+    out = g.read_article("rules", "logic")
+    assert "NO SUCH GUIDANCE ARTICLE" in out and "not the article" in out

@@ -86,8 +86,9 @@ SERVER_INSTRUCTIONS = (
 # are NOT in this response live.
 GUIDANCE_NOTICE = (
     "> IMPORTANT — this message contains the TOP article of each guidance "
-    "branch: the base material plus the complete map of every other article in "
-    "that branch. It is not every rule that applies. An area's rules are a "
+    "branch, each one whole between its `=== BEGIN ... ===` and "
+    "`=== END ... ===` lines: the base material plus the complete map of every "
+    "other article in that branch. It is not every rule that applies. An area's rules are a "
     "separate article, read whole with `lsfusion_get_guidance(rules='<area>')` "
     "using a name from the map below; the map states when each one becomes "
     "mandatory. A summary line in the map is an index entry, not the rule — do "
@@ -100,15 +101,16 @@ GUIDANCE_NOTICE = (
 )
 
 
+def _fetch(url: str, timeout: float) -> str:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (https only, fixed hosts)
+        return resp.read().decode("utf-8")
+
+
 def fetch_guidance(urls: list[str] | None = None, timeout: float | None = None) -> str:
     """Fetch each URL and return the concatenated text. Exceptions propagate."""
     urls = [BRIEF_URL, RULES_URL] if urls is None else urls
     timeout = FETCH_TIMEOUT if timeout is None else timeout
-    parts: list[str] = []
-    for url in urls:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (https only, fixed hosts)
-            parts.append(resp.read().decode("utf-8"))
-    return "\n\n".join(parts)
+    return "\n\n".join(_fetch(u, timeout) for u in urls)
 
 
 def guidance_version(text: str) -> str:
@@ -126,13 +128,33 @@ def _version_marker(text: str) -> str:
 
 
 def stamped_guidance(urls: list[str] | None = None, timeout: float | None = None) -> str:
-    """Live guidance body, headed by its version marker and the recovery notice.
+    """The top article of each branch, each one fenced, headed by the notice.
 
-    The version stamps the BODY alone, so it equals an independent hash of the
-    published Brief+Rules and stays stable as the notice wording evolves.
+    Fenced for the same reason a named article is, and this is the call that
+    needs it most: it is the one an assistant is told to make on every task, it
+    is the largest single result this server returns, and it carries the maps —
+    so a silent truncation here costs the assistant not one article but its
+    knowledge that the others exist.
+
+    The version stamps the concatenated BODIES alone, so it equals an
+    independent hash of the published Brief+Rules and stays stable as the
+    fences and the notice wording evolve.
     """
-    body = fetch_guidance(urls, timeout)
-    return f"{_version_marker(body)}\n{GUIDANCE_NOTICE}\n\n{body}"
+    urls = [BRIEF_URL, RULES_URL] if urls is None else urls
+    timeout = FETCH_TIMEOUT if timeout is None else timeout
+    bodies = [_fetch(u, timeout) for u in urls]
+    blocks = [fenced(_branch_of(u), "top", b) for u, b in zip(urls, bodies)]
+    body = "\n\n".join(bodies)
+    return f"{_version_marker(body)}\n{GUIDANCE_NOTICE}\n\n" + "\n\n".join(blocks)
+
+
+def _branch_of(url: str) -> str:
+    """Which branch a top-article URL belongs to, for its fence label."""
+    tail = url.rsplit("/", 1)[-1].lower()
+    for branch, prefix in BRANCH_PREFIX.items():
+        if tail.startswith(prefix.lower()):
+            return branch
+    return "guidance"
 
 
 # ---------------------------------------------------------------------------
@@ -151,11 +173,13 @@ ARTICLE_END = "=== END lsfusion {branch}/{name} | chars {n} ==="
 
 ARTICLE_NOTICE = (
     "> This is ONE COMPLETE lsFusion guidance article, delivered whole — not a "
-    "search result and not an excerpt. It is complete ONLY if you can see the "
-    "`=== END lsfusion {branch}/{name} ... ===` line at the very bottom; if "
-    "that line is missing the copy was truncated in transit, and if your "
-    "client saved this result to a file and showed you a preview, read that "
-    "file IN FULL before applying anything from it. Apply each rule at its "
+    "search result and not an excerpt. The `=== END lsfusion {branch}/{name} "
+    "... ===` line at the very bottom is what shows it was not cut short: if "
+    "it is missing, the copy was truncated in transit. Its `chars` is the "
+    "article's length as sent, so if what you are holding is visibly shorter "
+    "than that, you are holding a preview — and if your client saved this "
+    "result to a file, read that file IN FULL before applying anything from "
+    "it. Apply each rule at its "
     "stated strength: MUST / MUST NOT are binding, SHOULD / SHOULD NOT are "
     "recommendations. Nothing else was read: the other articles of this branch "
     "are listed in the map inside its top article, which "
@@ -238,21 +262,30 @@ def read_article(branch: str, name: str, timeout: float | None = None) -> str:
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (https only, fixed host)
             body = resp.read().decode("utf-8")
+            landed = resp.geturl()
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             # The site answers an unknown slug with a full HTML 404 page, so the
             # status is the only reliable signal here — never the body.
             return _not_found(branch, name)
         raise
+    # Sanitizing the name secures the URL we ASK for, not the page we get back.
+    # urlopen follows redirects silently, so a moved or misconfigured slug could
+    # hand back a different article — the other branch's, even — and it would be
+    # framed as this one, complete. And a soft 404 answers 200 with an HTML error
+    # page. Neither is a rules article, and passing either off as one is worse
+    # than any failure, so both become the not-found answer.
+    if landed != url:
+        return _not_found(branch, name, f" (the request for {url} was redirected to {landed})")
+    if body.lstrip()[:1] == "<":
+        return _not_found(branch, name, " (the site answered with a page, not the article)")
     key = name.strip().lower()
     label = "top" if key in TOP_ALIASES else key
+    return "\n".join((ARTICLE_NOTICE.format(branch=branch, name=label), "",
+                       fenced(branch, label, body)))
+
+
+def fenced(branch: str, label: str, body: str) -> str:
+    """One article between its BEGIN and END lines."""
     fields = {"branch": branch, "name": label, "n": len(body), "rev": guidance_version(body)}
-    return "\n".join(
-        (
-            ARTICLE_NOTICE.format(branch=branch, name=label),
-            "",
-            ARTICLE_BEGIN.format(**fields),
-            body,
-            ARTICLE_END.format(**fields),
-        )
-    )
+    return "\n".join((ARTICLE_BEGIN.format(**fields), body, ARTICLE_END.format(**fields)))

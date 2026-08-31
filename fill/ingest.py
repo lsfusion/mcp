@@ -143,16 +143,20 @@ def ingest_files(
         for rec in state.files.values()
         for srec in rec.sections.values()
     }
+    store_answered = True
     try:
         adoption = _AdoptionIndex(client.list_sections(), known_ids)
     except Exception as e:  # noqa: BLE001 — degrade, don't fail the run
         stats.sweep_errors.append(f"list_sections failed (adoption+sweep skipped): {e}")
         adoption = _AdoptionIndex([], set())
         sweep = False
+        # Also the only evidence we have that the store is reachable at all.
+        # Without it a 404 on delete is ambiguous — see `_apply_removals`.
+        store_answered = False
 
     # One executor for the whole run. `with` guarantees join even on errors.
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        _apply_removals(state, client, files_removed, stats, executor)
+        _apply_removals(state, client, files_removed, stats, executor, store_answered)
         _process_files(
             state, client, files_to_process, docs_root,
             source_type_for, slug_for, source_file_for, clock,
@@ -317,6 +321,7 @@ def _apply_removals(
     files_removed: list[str],
     stats: IngestStats,
     executor: ThreadPoolExecutor,
+    store_answered: bool = True,
 ) -> None:
     # Parallel delete across (file, section) pairs of all removed files.
     # All state mutation happens in the main thread after `as_completed`.
@@ -340,6 +345,27 @@ def _apply_removals(
             fut.result()
             stats.sections_deleted += 1
             # Drop from state only after the VS delete succeeds.
+            state.files[source_file].sections.pop(sid, None)
+        except KeyError as e:
+            # The store does not have this file id. That IS the end state we
+            # were asking for, so treat it as done rather than as a failure.
+            # Without this a crash between a successful DELETE and `save(state)`
+            # — a real window when 117 sections go at once — leaves a record
+            # that can never be cleaned: the next run asks again, gets a 404,
+            # marks the file stale, and repeats forever.
+            #
+            # Only when the store actually answered a listing, though. A missing
+            # VECTOR STORE 404s every delete in exactly the same way, and the
+            # listing failure degrades softly, so without this guard an
+            # unreachable store would look like a clean sweep and wipe the
+            # ledger while deleting nothing.
+            if not store_answered:
+                stats.errors.append(
+                    f"delete (removed file) {source_file}::{sid}: {e} — and the store "
+                    f"never answered a listing, so this 404 is not evidence of deletion")
+                had_error_per_file[source_file] = True
+                continue
+            stats.sections_deleted += 1
             state.files[source_file].sections.pop(sid, None)
         except Exception as e:
             stats.errors.append(f"delete (removed file) {source_file}::{sid}: {e}")

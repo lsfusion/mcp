@@ -43,7 +43,7 @@ def test_get_guidance_declares_no_output_schema(mcp_server):
 def test_get_guidance_result_is_plain_text_not_json_wrapped(mcp_server, monkeypatch):
     import tools.guidance as g
 
-    monkeypatch.setattr(g, "fetch_guidance", lambda *a, **k: "line1\nline2")
+    monkeypatch.setattr(g, "_fetch", lambda url, timeout: "line1\nline2")
 
     result = asyncio.run(
         mcp_server._tool_manager.call_tool(
@@ -56,8 +56,30 @@ def test_get_guidance_result_is_plain_text_not_json_wrapped(mcp_server, monkeypa
     assert not isinstance(result, tuple), "structuredContent reintroduced"
     assert [b.type for b in result] == ["text"]
     text = result[0].text
-    assert text.endswith("line1\nline2")
+    assert "line1\nline2" in text
+    assert text.rstrip().endswith("===")  # the fence must survive the transport
     assert not text.lstrip().startswith('{"result"')
+
+
+def test_get_guidance_serves_a_named_article_as_plain_text(mcp_server, monkeypatch):
+    # Same guarantee for the by-name call: an article delivered as one escaped
+    # JSON line is an article a file reader cannot read back.
+    import tools.guidance as g
+
+    monkeypatch.setattr(g, "read_article",
+                        lambda branch, name, timeout=None: f"ARTICLE {branch}/{name}")
+    import server as srv
+    monkeypatch.setattr(srv, "read_article", g.read_article)
+
+    result = asyncio.run(
+        mcp_server._tool_manager.call_tool(
+            "lsfusion_get_guidance", {"rules": "logic"}, context=None, convert_result=True
+        )
+    )
+
+    assert not isinstance(result, tuple), "structuredContent reintroduced"
+    assert [b.type for b in result] == ["text"]
+    assert result[0].text == "ARTICLE rules/logic"
 
 
 def test_retrieve_docs_keeps_its_structured_schema(mcp_server):
