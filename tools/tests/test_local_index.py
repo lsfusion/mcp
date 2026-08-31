@@ -47,7 +47,7 @@ def snapshot(tmp_path, monkeypatch):
     rows = [
         {"section_id": f"Rules_a::s{i}", "sourceType": "rules", "slug": "Rules_a",
          "heading_path": f"Rules: a > s{i}", "keywords": "", "text": f"text {i}"}
-        for i in range(3)
+        for i in range(8)
     ] + [
         {"section_id": "Rules::top", "sourceType": "rules", "slug": "Rules",
          "heading_path": "Rules > top", "keywords": "", "text": "the top guidance article"},
@@ -197,21 +197,28 @@ def test_an_empty_corpus_is_never_written(tmp_path):
 # ─────────────────── the tool itself, on the local backend ───────────────────
 
 
+def _capture_emit(monkeypatch) -> list[dict]:
+    calls: list[dict] = []
+    monkeypatch.setattr(__import__("tools.rag_retrieve", fromlist=["x"]), "emit",
+                        lambda event, fields, *, stream, ok=True: calls.append(fields))
+    return calls
+
+
 def _wire_tool(monkeypatch, snapshot_path, *, backend="local", embed_axis=2, embed_raises=False):
     """Point retrieve_docs at the snapshot and stub the ONE network call the
-    local path still makes — embedding the query."""
+    local path still makes — embedding the queries."""
     import tools.rag_retrieve as rr
 
     monkeypatch.setattr(rr, "RETRIEVAL_BACKEND", backend)
     monkeypatch.setattr(li, "SNAPSHOT_PATH", str(snapshot_path))
     li.reset_for_tests()
 
-    def fake_embed(query):
+    def fake_embed(queries):
         if embed_raises:
             raise RuntimeError("embeddings are down")
-        return _unit(settings.EMBEDDING_DIMENSIONS, embed_axis)
+        return [_unit(settings.EMBEDDING_DIMENSIONS, embed_axis) for _ in queries]
 
-    monkeypatch.setattr(rr, "_embed_query", fake_embed)
+    monkeypatch.setattr(rr, "_embed_queries", fake_embed)
     return rr
 
 
@@ -270,3 +277,125 @@ def test_the_backend_that_served_the_call_is_logged(snapshot, monkeypatch):
                         lambda **kw: (_ for _ in ()).throw(AssertionError("not the store")))
     rr.retrieve_docs_tool("anything", type="rules")
     assert events[0]["backend"] == "local"
+
+
+# ─────────────────────────── several queries at once ─────────────────────────
+
+
+def test_a_batch_answers_every_query_and_says_which(snapshot, monkeypatch):
+    """Real traffic asks about unrelated things back to back — 60% of
+    consecutive calls are on different topics — so a batch is the normal case,
+    and the caller has to be able to tell the answers apart."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    dim = settings.EMBEDDING_DIMENSIONS
+    monkeypatch.setattr(rr, "_embed_queries",
+                        lambda qs: [_unit(dim, 2), _unit(dim, 0)])
+    out = rr.retrieve_docs_tool(["about s2", "about s0"], type="rules")
+    by_query = {}
+    for d in out.docs:
+        by_query.setdefault(d.query, []).append(d.id)
+    assert set(by_query) == {"about s2", "about s0"}
+    assert by_query["about s2"][0] == "Rules_a::s2"
+    assert by_query["about s0"][0] == "Rules_a::s0"
+
+
+def test_one_query_is_untouched_by_the_batch_path(snapshot, monkeypatch):
+    """A single query must behave exactly as it did: same budget, and no
+    `query` label on results that have nothing to be told apart from."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    single = rr.retrieve_docs_tool("anything", type="rules")
+    as_list = rr.retrieve_docs_tool(["anything"], type="rules")
+    assert [d.id for d in single.docs] == [d.id for d in as_list.docs]
+    assert all(d.query is None for d in single.docs)
+
+
+def test_a_chunk_answering_two_queries_goes_to_the_one_that_ranked_it_higher(snapshot, monkeypatch):
+    """Separate calls cannot know a chunk is a repeat; one call can. And which
+    query it is credited to is not "whichever was listed first" — it is the one
+    the chunk actually answers better."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    dim = settings.EMBEDDING_DIMENSIONS
+    weak, strong = _unit(dim, 2) * 0.5, _unit(dim, 2)
+    monkeypatch.setattr(rr, "_embed_queries", lambda qs: [weak, strong])
+    out = rr.retrieve_docs_tool(["weaker", "stronger"], type="rules")
+    ids = [d.id for d in out.docs]
+    assert len(ids) == len(set(ids))
+    assert [d.query for d in out.docs if d.id == "Rules_a::s2"] == ["stronger"]
+
+
+def test_a_batch_shares_one_budget_instead_of_multiplying_it(snapshot, monkeypatch):
+    """Otherwise batching becomes a way to buy context, and the quota stops
+    meaning anything."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    dim = settings.EMBEDDING_DIMENSIONS
+    monkeypatch.setattr(rr, "BATCH_TOTAL_CAP", 4)
+    monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2)] * len(qs))
+    out = rr.retrieve_docs_tool(["a", "b"], type="rules")
+    assert len(out.docs) <= 4
+
+
+def test_too_many_queries_is_refused_not_truncated(snapshot, monkeypatch):
+    """Split below one useful share and the call is worthless; say so instead
+    of returning a token result per query."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    monkeypatch.setattr(rr, "BATCH_MAX_QUERIES", 3)
+    with pytest.raises(ValueError, match="at most 3 queries"):
+        rr.retrieve_docs_tool(["a", "b", "c", "d"], type="rules")
+
+
+def test_an_empty_query_is_refused(snapshot, monkeypatch):
+    rr = _wire_tool(monkeypatch, snapshot)
+    for bad in ("", "   ", [], ["ok", ""]):
+        with pytest.raises(ValueError, match="non-empty string"):
+            rr.retrieve_docs_tool(bad, type="rules")
+
+
+def test_a_repeated_query_does_not_eat_its_own_budget(snapshot, monkeypatch):
+    """["x", "x"] used to halve the share and then hand every chunk to the
+    first copy — the caller got LESS than a plain "x" would have returned."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    dim = settings.EMBEDDING_DIMENSIONS
+    monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2)] * len(qs))
+    once = rr.retrieve_docs_tool("x", type="rules")
+    twice = rr.retrieve_docs_tool(["x", "x"], type="rules")
+    assert [d.id for d in twice.docs] == [d.id for d in once.docs]
+    assert all(d.query is None for d in twice.docs)  # collapsed back to one query
+
+
+def test_the_returned_list_is_ranked_by_score(snapshot, monkeypatch):
+    """DocItem says the order means `score`; handing chunks out per query must
+    not leave the list grouped by query instead."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    dim = settings.EMBEDDING_DIMENSIONS
+    monkeypatch.setattr(rr, "_embed_queries",
+                        lambda qs: [_unit(dim, 0) * 0.4, _unit(dim, 2)])
+    out = rr.retrieve_docs_tool(["weak", "strong"], type="rules")
+    scores = [d.score for d in out.docs]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_a_batch_logs_what_each_query_got(snapshot, monkeypatch):
+    """One strong query hides a failed one behind the aggregate counts, so the
+    per-query outcome has to be in the record."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    dim = settings.EMBEDDING_DIMENSIONS
+    events = _capture_emit(monkeypatch)
+    monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2), _unit(dim, 0)])
+    rr.retrieve_docs_tool(["about s2", "about s0"], type="rules")
+    f = events[0]
+    assert f["queries"] == ["about s2", "about s0"]
+    assert [s["query_index"] for s in f["query_stats"]] == [0, 1]
+    assert all(s["n_results"] > 0 for s in f["query_stats"])
+    assert {r["query_index"] for r in f["results"]} == {0, 1}
+
+
+def test_the_batch_log_is_capped_as_a_whole(snapshot, monkeypatch):
+    """Capping each query separately would let a batch write the cap times the
+    batch size into one record."""
+    rr = _wire_tool(monkeypatch, snapshot)
+    dim = settings.EMBEDDING_DIMENSIONS
+    events = _capture_emit(monkeypatch)
+    monkeypatch.setattr(rr, "QUERY_LOG_MAX_CHARS", 10)
+    monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2)] * len(qs))
+    rr.retrieve_docs_tool(["a" * 20, "b" * 20, "c" * 20], type="rules")
+    assert sum(len(q) for q in events[0]["queries"]) <= 10

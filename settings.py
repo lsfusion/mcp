@@ -84,6 +84,27 @@ TYPED_TOP_K = {
     SOURCETYPE_DOC_RULES: 7,
 }
 
+# Ceiling on the chunks ONE call returns when it carries several queries.
+# A batch must not be a way to buy context: four separate calls return 60
+# chunks (~70 KB), and the whole reason a per-branch quota exists is the
+# caller's context, not its patience. Under this cap a four-query batch costs
+# ~28 KB — less than the calls it replaces. A single query is unaffected: its
+# own quota (15 untyped, 7-8 typed) is already below the cap.
+BATCH_TOTAL_CAP = int(os.environ.get("BATCH_TOTAL_CAP", "24"))
+
+# Most queries a batch may carry. Beyond this the split leaves each query too
+# little to be worth asking, so the call is refused rather than quietly
+# truncated. Measured on real traffic: bursts of unrelated needs are 2-4 deep,
+# and 8 covers all but a handful.
+# Measured depth is 2-4 (452 bursts of two topics, 200 of three, 105 of four),
+# and four is what has actually been verified end to end. Raise it only once
+# per-query completeness has been measured at five and beyond.
+BATCH_MAX_QUERIES = max(1, min(
+    int(os.environ.get("BATCH_MAX_QUERIES", "4")),
+    # More queries than the cap would give each less than one chunk, and the
+    # max(1, ...) floor would then quietly break the cap instead.
+    BATCH_TOTAL_CAP))
+
 # === Local dense index (fill/snapshot.py, tools/local_index.py) ===
 # Where the server looks for the snapshot. Empty (or a missing file) => the
 # local index is simply not used and retrieval goes to the vector store, which
@@ -108,8 +129,11 @@ SNAPSHOT_MAX_AGE_DAYS = float(os.environ.get("SNAPSHOT_MAX_AGE_DAYS", "7"))
 # Bump when the log envelope/record shape changes, or when a field's MEANING
 # does. v3: `top_score` is max(results[].score); in v2 it was the first hit's
 # score, which stopped being the maximum while a heading bonus reordered the
-# list (that bonus is gone, but the field keeps the v3 meaning).
-LOG_SCHEMA_VERSION = 3
+# list (that bonus is gone, but the field keeps the v3 meaning). v4: a call may
+# carry several queries — `query` is then a JOIN of them rather than anything a
+# caller typed, and `queries` / `query_stats` / `results[].query_index` carry
+# what actually happened. Group analytics by `queries`, never by the join.
+LOG_SCHEMA_VERSION = 4
 # Stamped into every event so analytics can attribute records to a build. Ops
 # should set this (image digest / git sha) in the deployment env.
 SERVER_VERSION = os.environ.get("MCP_SERVER_VERSION", "unknown")

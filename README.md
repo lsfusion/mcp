@@ -50,12 +50,27 @@ Returns an array of objects:
 Ranked by `score` — the similarity of the chunk to the query. Structured
 output is enabled.
 
+`query` accepts a list of distinct queries when the caller needs several
+independent things at once (on real traffic 85% of call bursts carry two or
+more topics). The batch is one embeddings round trip instead of several, and
+shares ONE budget (`BATCH_TOTAL_CAP`, at most `BATCH_MAX_QUERIES` queries)
+rather than multiplying it, so it never costs more context than the separate
+calls it replaces. `type` and `exclude_ids` apply to every query in the batch.
+A chunk answering two queries is returned once, credited to the query it
+scored higher for, and every chunk carries the `query` it is credited to
+(`null` when only one was submitted). The per-query share is a ceiling, not a
+guarantee: a query whose best chunks all belong to a neighbour returns fewer.
+
 ## Environment variables
 - `OPENAI_API_KEY` — OpenAI API key (required).
 - `RAG_VECTOR_STORE_ID` — OpenAI Vector Store id that `lsfusion_retrieve_docs` searches against (required). Must match the store populated by the `ragIngestDocs` Jenkins pipeline.
 - `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`).
 - `MCP_SERVER_VERSION` — build identifier (image digest / git sha) stamped into every event log line (default `unknown`).
 - `LOG_DIR` — directory for dated JSONL event files. Empty (default) ⇒ event logs go to **stderr only**. Set it to a writable (uid 10001) bind-mount to also append `retrieval-YYYYMMDD.jsonl` (Phase A2).
+- `RETRIEVAL_BACKEND` — `store` (OpenAI Vector Store) or `local` (the in-process snapshot; falls back to the store when the snapshot is missing or the embedding call fails).
+- `RAG_SNAPSHOT_PATH` — where the local backend looks for the corpus snapshot (default `/data/snapshot/corpus.npz`).
+- `SNAPSHOT_MAX_AGE_DAYS` — how old a snapshot may get before every load warns (default 7; a warning, never a refusal).
+- `BATCH_TOTAL_CAP` / `BATCH_MAX_QUERIES` — the shared chunk budget of a multi-query call and the most queries one may carry (default 24 / 4).
 - `QUERY_LOG_MAX_CHARS` / `ERROR_LOG_MAX_CHARS` — caps on the verbatim query / error text stored in logs (default 2000 / 500).
 
 ## Event logging (`retrieve_docs`)
