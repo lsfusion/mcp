@@ -48,14 +48,35 @@ def lsfusion_retrieve_docs(
     return retrieve_docs_tool(query, type, exclude_ids)
 
 
-from tools.guidance import stamped_guidance
-# structured_output=False keeps the result a plain TextContent block. With the
-# default schema (`{"result": <str>}`) a client that persists an oversized result
-# writes it as ONE JSON line with escaped newlines — which file readers that cap
-# line length cannot read back, stranding the guidance entirely.
+from tools.guidance import stamped_guidance, read_article
+# structured_output=False keeps the result a plain TextContent block. Two
+# reasons, and both bite here. With the default schema (`{"result": <str>}`) a
+# client that persists an oversized result writes it as ONE JSON line with
+# escaped newlines, which file readers that cap line length cannot read back —
+# stranding the guidance entirely. And a client that receives `structuredContent`
+# may prefer it and DISCARD the text blocks, re-serializing with JSON.stringify;
+# a Markdown article delivered that way reaches the model as one escaped line.
 @mcp.tool(structured_output=False)
-def lsfusion_get_guidance() -> str:
-    """Fetch the brief overview and the CORE rules for working with lsFusion. The assistant MUST call this at the start of ANY lsFusion-related task — writing, modifying or reviewing lsFusion code, or answering questions about its syntax or semantics — and MUST then read what it returns and apply each rule according to that rule's stated strength (MUST / MUST NOT are binding; SHOULD / SHOULD NOT are recommendations). Once per session is enough. This is the top level only: the rules for a specific area are separate articles, retrieved with `lsfusion_retrieve_docs(type='rules')`. The result is large and may exceed your client's inline limit: if it is truncated or saved to a file, read the full file before continuing. It opens with a version marker identifying the published guidance revision."""
+def lsfusion_get_guidance(
+    rules: Annotated[
+        str | None,
+        Field(default=None, description="Name of the `rules` area whose article you need — the short name in the FIRST COLUMN of the map inside the top `rules` article, not a slug (`Rules_logic`) and not a title. The whole article comes back: no search, no ranking, no excerpt. Reading an area's article is BINDING wherever the map states a trigger for it — the map's one-line summary is an index entry, not the rule, and an area you did not fetch is not an area without rules. Omit BOTH parameters to get the top article of each branch, which is the start-of-session call and the only way to obtain the maps."),
+    ] = None,
+    brief: Annotated[
+        str | None,
+        Field(default=None, description="Name of the `brief` area whose article you need — the short name from the map inside the top `brief` article. Same shape as `rules`, and only one of the two may be given per call: one call delivers one whole article. The `brief` branch is a capability map, so reading an area before working in it is STRONGLY RECOMMENDED rather than binding — it is what stops you inventing a mechanism the platform already has. It is not a substitute for `lsfusion_retrieve_docs`: the brief says WHAT exists, the `language` / `paradigm` / `how-to` branches say how to write it."),
+    ] = None,
+) -> str:
+    """Read ONE lsFusion guidance article WHOLE — the coding rules of an area (`rules`) or its capability map (`brief`). These two branches are a small hierarchy of articles, not a search corpus: you name an article and receive all of it, so nothing relevant can be silently withheld the way a top-N chunk retrieval withholds it. Call with NO arguments at the start of any lsFusion task: that returns the top article of both branches, each carrying the base material plus the complete map of its branch, and the `rules` map states per area the point at which reading that area's article stops being optional. Apply each rule at its stated strength (MUST / MUST NOT are binding; SHOULD / SHOULD NOT are recommendations). Syntax, concepts and recipes are a different tool: `lsfusion_retrieve_docs`. Every article is fenced by `=== BEGIN ... ===` / `=== END ... ===`; the END fence is what proves you are holding the complete text, so if it is missing — or your client saved the result to a file and showed you a preview — read the full file before using anything from it."""
+    if rules is not None and brief is not None:
+        raise ValueError(
+            "Pass either `rules` or `brief`, not both: one call delivers one whole "
+            "article. Call twice, or omit both for the top article of each branch."
+        )
+    if rules is not None:
+        return read_article("rules", rules)
+    if brief is not None:
+        return read_article("brief", brief)
     return stamped_guidance()
 
 

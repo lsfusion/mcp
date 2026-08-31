@@ -114,7 +114,10 @@ def test_notice_does_not_claim_completeness_or_flatten_rule_strength():
     lowered = g.GUIDANCE_NOTICE.lower()
     assert "complete lsfusion brief and rules" not in lowered
     assert "strictly follow" not in lowered
-    assert "lsfusion_retrieve_docs" in g.GUIDANCE_NOTICE
+    #   3. pointing at `retrieve_docs(type='rules')` — that branch left the
+    #      search corpus; an area's rules are read whole, by name.
+    assert "retrieve_docs" not in lowered
+    assert "lsfusion_get_guidance(rules='<area>')" in g.GUIDANCE_NOTICE
     assert "should" in lowered and "must" in lowered
 
 
@@ -122,3 +125,90 @@ def test_server_instructions_do_not_flatten_rule_strength():
     lowered = g.SERVER_INSTRUCTIONS.lower()
     assert "strictly follow" not in lowered
     assert "stated strength" in lowered
+
+
+# --- reading ONE article by name ---------------------------------------------
+
+
+class _FakeHTTPError(urllib.error.HTTPError):
+    def __init__(self, code):
+        super().__init__("http://x", code, "err", {}, None)
+
+
+def test_area_name_maps_to_the_branch_prefixed_slug():
+    assert g.article_url("rules", "logic") == f"{g.GUIDANCE_BASE_URL}Rules_logic.md"
+    assert g.article_url("brief", "interface") == f"{g.GUIDANCE_BASE_URL}Brief_interface.md"
+    # Case and surrounding space are the caller's, not an error.
+    assert g.article_url("rules", "  Logic ") == f"{g.GUIDANCE_BASE_URL}Rules_logic.md"
+
+
+def test_top_aliases_reach_the_branch_top_article():
+    for alias in ("top", "rules", "index", "map"):
+        assert g.article_url("rules", alias) == f"{g.GUIDANCE_BASE_URL}Rules.md"
+    assert g.article_url("brief", "brief") == f"{g.GUIDANCE_BASE_URL}Brief.md"
+
+
+def test_a_name_cannot_escape_its_branch_or_walk_the_path():
+    # The branch lives in the parameter, never in the value, and the prefix is
+    # ours — so no caller-supplied name can name a page in the other branch or
+    # anywhere else on the site.
+    for hostile in ("../Brief", "Brief_forms", "a/b", "x.md", "", "UPPER/", "logic;rm"):
+        with pytest.raises(ValueError):
+            g.article_slug("rules", hostile)
+
+
+def test_unresolvable_name_is_an_answer_not_an_exception_and_makes_no_request(monkeypatch):
+    def fake_urlopen(url, timeout=None):
+        raise AssertionError("must not reach the network for a name that cannot be a slug")
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", fake_urlopen)
+
+    out = g.read_article("rules", "Brief_forms")
+
+    assert "NO SUCH GUIDANCE ARTICLE" in out
+    # The load-bearing sentence: an empty answer must never read as "no rules apply".
+    assert "NOTHING WAS READ" in out
+    assert "lsfusion_get_guidance()" in out
+
+
+def test_404_is_answered_as_text_by_status_not_by_body(monkeypatch):
+    # The docs site serves a full HTML 404 page, so the body is a poor signal
+    # and a long one; only the status tells us the article does not exist.
+    def fake_urlopen(url, timeout=None):
+        raise _FakeHTTPError(404)
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", fake_urlopen)
+
+    out = g.read_article("rules", "nosucharea")
+    assert "NO SUCH GUIDANCE ARTICLE" in out and "NOTHING WAS READ" in out
+
+
+def test_other_failures_propagate_and_are_never_dressed_up_as_absence(monkeypatch):
+    for boom in (_FakeHTTPError(500), urllib.error.URLError("down"), TimeoutError()):
+        monkeypatch.setattr(
+            g.urllib.request, "urlopen", lambda url, timeout=None, e=boom: (_ for _ in ()).throw(e)
+        )
+        with pytest.raises(type(boom)):
+            g.read_article("rules", "logic")
+
+
+def test_article_is_fenced_and_the_end_fence_terminates_the_result(monkeypatch):
+    body = "RULE BODY"
+    monkeypatch.setattr(
+        g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(body.encode())
+    )
+
+    out = g.read_article("rules", "logic")
+
+    # Completeness is proved by a TERMINATOR, not a flag: a header claiming
+    # completeness survives truncation and then lies, an END fence cannot.
+    assert out.endswith(f"=== END lsfusion rules/logic | chars {len(body)} ===")
+    assert f"rev {g.guidance_version(body)}" in out
+    assert f"| chars {len(body)} ===\n{body}\n" in out
+    # The version stamps the BODY alone, so it equals a hash of the published page.
+    assert g.guidance_version(body) == g.guidance_version(body)
+
+
+def test_unknown_branch_is_a_programming_error():
+    with pytest.raises(ValueError):
+        g.article_slug("howto", "logic")
