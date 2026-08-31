@@ -28,7 +28,6 @@ from settings import (
     SECTION_ID,
     HEADING_PATH,
     TOP_K,
-    TYPED_TOP_K,
     RETRIEVAL_BACKEND,
     EMBEDDING_MODEL,
     BATCH_TOTAL_CAP,
@@ -98,9 +97,6 @@ def _filters_for_source(source_type: str, exclude_ids: list[str] | None = None) 
     would have spent the quota on the excluded ones.
     """
     filters = [{"type": "eq", "key": SOURCETYPE, "value": source_type}]
-    top_slug = GUIDANCE_TOP_SLUGS.get(source_type)
-    if top_slug is not None:
-        filters.append({"type": "ne", "key": SLUG, "value": top_slug})
     # Empty/None => no filter at all: the API contract does not define `nin []`.
     if exclude_ids:
         filters.append({"type": "nin", "key": SECTION_ID, "value": list(exclude_ids)})
@@ -192,17 +188,12 @@ def _embed_queries(queries: list[str]) -> list["np.ndarray"]:
 def _local_search_for_source(query: str, query_vector, source_type: str,
                              top_k: int, exclude_ids: list[str] | None) -> List[_Hit]:
     """One branch of the LOCAL index — the same contract as its vector-store
-    twin: the branch's own quota, the top guidance article held back, and the
-    caller's `exclude_ids` dropped before the cut rather than after."""
+    twin: the branch's own quota, and the caller's `exclude_ids` dropped before
+    the cut rather than after."""
     combined = f"{SOURCETYPE_DOCUMENTATION}-{source_type}"
-    top_slug = GUIDANCE_TOP_SLUGS.get(source_type)
     rows = local_index.search(
-        query_vector, source_type,
-        # A wider field than the quota, for the same reason the store call asks
-        # for one: the heading bonus can only reorder what it was given.
-        top_k,
+        query_vector, source_type, top_k,
         exclude_ids=set(exclude_ids or ()),
-        exclude_slugs={top_slug} if top_slug else None,
     )
     hits = [_Hit(
         id=r["section_id"],
@@ -217,36 +208,78 @@ def _local_search_for_source(query: str, query_vector, source_type: str,
     return hits[:top_k]
 
 
-ALLOWED_TYPES = (
+SEARCHABLE_TYPES = (
     SOURCETYPE_DOCUMENTATION_LANGUAGE,
     SOURCETYPE_DOCUMENTATION_PARADIGM,
     SOURCETYPE_DOCUMENTATION_HOWTO,
+)
+
+# The two branches that LEFT the search corpus. Relevance in the branches above
+# is probabilistic, so ranked excerpts are the right answer; a rules article is
+# only useful whole, and a top-N retrieval cannot report what it withheld — an
+# assistant handed 3 of an article's 4 chunks has no way to learn the 4th
+# existed. They are read by name now, entire, through `get_guidance`.
+#
+# They stay ACCEPTED here rather than becoming a validation error, and the
+# reason is the clients: a tool schema is cached at connect time and mirrored by
+# hand in two other repositories, so callers will keep asking for these branches
+# for as long as a release cycle takes. An error tells such a caller nothing it
+# can act on, and an empty result is worse — indistinguishable from "no rules
+# apply to this area", which is the exact belief this whole change exists to
+# prevent. So the call succeeds and returns one item that says where the branch
+# went and how to ask for it.
+MOVED_TYPES = (
     SOURCETYPE_DOCUMENTATION_BRIEF,
     SOURCETYPE_DOCUMENTATION_RULES,
 )
 
-# The one TOP article of each guidance branch, by slug. `get_guidance` already
-# serves these two pages in FULL, so their chunks are always in the assistant's
-# context — retrieving them again just spends the per-branch quota on text it
-# already has. Only these slugs are excluded; the rest of `brief/` and `rules/`
-# holds the detailed per-area articles, which exist precisely to be retrieved
-# and are searched like any other branch, `type` given or not.
-GUIDANCE_TOP_SLUGS = {
-    SOURCETYPE_DOCUMENTATION_BRIEF: "Brief",
-    SOURCETYPE_DOCUMENTATION_RULES: "Rules",
-}
+ALLOWED_TYPES = SEARCHABLE_TYPES + MOVED_TYPES
 
 # Branches searched when `type` is omitted.
-DEFAULT_TYPES = ALLOWED_TYPES
+DEFAULT_TYPES = SEARCHABLE_TYPES
 
-# `type` argument → TOP_K / TYPED_TOP_K key
+# `type` argument → TOP_K key
 _TYPE_TO_TOP_K = {
     SOURCETYPE_DOCUMENTATION_LANGUAGE: SOURCETYPE_DOC_LANGUAGE,
     SOURCETYPE_DOCUMENTATION_PARADIGM: SOURCETYPE_DOC_PARADIGM,
     SOURCETYPE_DOCUMENTATION_HOWTO: SOURCETYPE_DOC_HOWTO,
-    SOURCETYPE_DOCUMENTATION_BRIEF: SOURCETYPE_DOC_BRIEF,
-    SOURCETYPE_DOCUMENTATION_RULES: SOURCETYPE_DOC_RULES,
 }
+
+
+# One item per moved branch, carrying the map with it so the follow-up call
+# needs no extra round trip. It is a synthetic document in a document channel,
+# which is not free — but the alternative is an empty `docs: []`, and an empty
+# success reads to a model as "there is nothing here", which for the `rules`
+# branch is the most expensive wrong belief available.
+_MOVED_TEXT = (
+    "> MOVED — the `{branch}` branch is no longer searched, and this call "
+    "retrieved NOTHING. Your quer{plural}: {queries}.\n"
+    "> Nothing was ruled out: no article was read, so this result says nothing "
+    "about whether {branch} material covers your area.\n"
+    "> These articles are now read WHOLE, one per call, with "
+    "`lsfusion_get_guidance({branch}='<name>')`. There are four:\n"
+    ">   `logic` — properties, actions, events, constraints, change sessions\n"
+    ">   `view` — forms, design, navigator, reports, internationalization\n"
+    ">   `physical` — tables, materializations, indexes, modules, migration\n"
+    ">   `integration` — data import, data export, calls in and out\n"
+    "> `lsfusion_get_guidance()` with no arguments returns the top article of "
+    "each branch, which carries the full map and, for `rules`, the point at "
+    "which reading each article stops being optional."
+)
+
+
+def _moved_branch_result(branch: str, queries: list[str]) -> RetrieveDocsOutput:
+    return RetrieveDocsOutput(docs=[DocItem(
+        id=f"guidance-moved-{branch}",
+        source=f"{SOURCETYPE_DOCUMENTATION}-{branch}",
+        score=0.0,
+        query=None,
+        text=_MOVED_TEXT.format(
+            branch=branch,
+            plural="ies were" if len(queries) > 1 else "y was",
+            queries=", ".join(repr(q) for q in queries),
+        ),
+    )])
 
 
 def retrieve_docs_tool(
@@ -279,19 +312,15 @@ def retrieve_docs_tool(
 
     `type` filters by chunk sourceType (the docs folder) and applies to every
     query in the batch:
-      * omitted / null — search all five branches (`language`, `paradigm`,
-        `how-to`, `brief`, `rules`) with a per-branch quota and merge results
-        by score.
-      * one of `language` / `paradigm` / `how-to` / `brief` / `rules` — only that
-        branch, with a per-branch quota of its own (see TYPED_TOP_K).
+      * omitted / null — search all three reference branches (`language`,
+        `paradigm`, `how-to`) with a per-branch quota and merge results by score.
+      * one of `language` / `paradigm` / `how-to` — only that branch.
+      * `brief` / `rules` — accepted, but these branches left the search corpus:
+        the call returns one item naming the article reader instead.
 
     `exclude_ids` drops chunks by `DocItem.id` and likewise applies to the whole
     batch: pass back the ids already in context to page deeper instead of
     getting the same chunks again.
-
-    The top article of each guidance branch (`Brief`, `Rules`) is never
-    returned — `get_guidance` already delivers it in full (see
-    GUIDANCE_TOP_SLUGS).
 
     The store only holds English (`docs/en/`) content. Cross-lingual
     embeddings make non-English queries work, but English wording is
@@ -318,10 +347,10 @@ def retrieve_docs_tool(
             raise ValueError(
                 f"type must be one of {ALLOWED_TYPES} or null/omitted, got {type!r}"
             )
+        if type in MOVED_TYPES:
+            return _moved_branch_result(type, queries)
         requested = (type,) if type else DEFAULT_TYPES
-        # A quota table per mode: the typed search may spend more on one branch
-        # than the untyped search can afford to spend on each of five.
-        quotas = TYPED_TOP_K if type else TOP_K
+        quotas = TOP_K
         per_call = sum(quotas.get(_TYPE_TO_TOP_K[s], 0) for s in requested)
         # One shared budget, split evenly. A single query is unaffected — its
         # own quota is already under the cap — so batching costs context rather

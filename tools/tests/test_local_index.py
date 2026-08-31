@@ -41,18 +41,18 @@ def _unit(dim: int, axis: int) -> np.ndarray:
 
 @pytest.fixture
 def snapshot(tmp_path, monkeypatch):
-    """A tiny corpus: four `rules` chunks and one `brief`, each pointing along
-    its own axis, so "closest to axis k" is exact and obvious."""
+    """A tiny corpus: eight `how-to` chunks and one `paradigm`, each pointing
+    along its own axis, so "closest to axis k" is exact and obvious."""
     dim = settings.EMBEDDING_DIMENSIONS
     rows = [
-        {"section_id": f"Rules_a::s{i}", "sourceType": "rules", "slug": "Rules_a",
-         "heading_path": f"Rules: a > s{i}", "keywords": "", "text": f"text {i}"}
+        {"section_id": f"Howto_a::s{i}", "sourceType": "how-to", "slug": "Howto_a",
+         "heading_path": f"How-to: a > s{i}", "keywords": "", "text": f"text {i}"}
         for i in range(8)
     ] + [
-        {"section_id": "Rules::top", "sourceType": "rules", "slug": "Rules",
-         "heading_path": "Rules > top", "keywords": "", "text": "the top guidance article"},
-        {"section_id": "Brief_b::s0", "sourceType": "brief", "slug": "Brief_b",
-         "heading_path": "Brief: b > s0", "keywords": "", "text": "brief text"},
+        {"section_id": "Howto_b::s0", "sourceType": "how-to", "slug": "Howto_b",
+         "heading_path": "How-to: b > s0", "keywords": "", "text": "another how-to"},
+        {"section_id": "Paradigm_c::s0", "sourceType": "paradigm", "slug": "Paradigm_c",
+         "heading_path": "Paradigm: c > s0", "keywords": "", "text": "paradigm text"},
     ]
     vectors = np.stack([_unit(dim, i) for i in range(len(rows))])
     path = tmp_path / "corpus.npz"
@@ -66,30 +66,24 @@ def snapshot(tmp_path, monkeypatch):
 
 
 def test_the_nearest_chunk_of_the_branch_comes_first(snapshot):
-    hits = li.search(_unit(settings.EMBEDDING_DIMENSIONS, 2), "rules", 3)
-    assert [h["section_id"] for h in hits][0] == "Rules_a::s2"
+    hits = li.search(_unit(settings.EMBEDDING_DIMENSIONS, 2), "how-to", 3)
+    assert [h["section_id"] for h in hits][0] == "Howto_a::s2"
     assert hits[0]["score"] == pytest.approx(1.0)
     assert hits[0]["text"] == "text 2"
 
 
 def test_a_branch_only_ever_returns_its_own_chunks(snapshot):
-    hits = li.search(_unit(settings.EMBEDDING_DIMENSIONS, 0), "brief", 5)
-    assert [h["section_id"] for h in hits] == ["Brief_b::s0"]
+    hits = li.search(_unit(settings.EMBEDDING_DIMENSIONS, 0), "paradigm", 5)
+    assert [h["section_id"] for h in hits] == ["Paradigm_c::s0"]
 
 
 def test_exclusions_are_applied_before_the_cut_not_after(snapshot):
     """Dropping them from a finished top-k would return fewer chunks than the
     caller asked for — which is exactly what paging with `exclude_ids` needs
     not to happen."""
-    hits = li.search(_unit(settings.EMBEDDING_DIMENSIONS, 2), "rules", 2,
-                     exclude_ids={"Rules_a::s2"})
-    assert len(hits) == 2 and "Rules_a::s2" not in [h["section_id"] for h in hits]
-
-
-def test_the_top_guidance_article_can_be_held_back(snapshot):
-    hits = li.search(_unit(settings.EMBEDDING_DIMENSIONS, 3), "rules", 4,
-                     exclude_slugs={"Rules"})
-    assert "Rules::top" not in [h["section_id"] for h in hits]
+    hits = li.search(_unit(settings.EMBEDDING_DIMENSIONS, 2), "how-to", 2,
+                     exclude_ids={"Howto_a::s2"})
+    assert len(hits) == 2 and "Howto_a::s2" not in [h["section_id"] for h in hits]
 
 
 def test_no_snapshot_is_not_an_error_it_is_a_fallback(tmp_path, monkeypatch):
@@ -229,8 +223,8 @@ def test_the_switch_serves_the_call_from_the_snapshot(snapshot, monkeypatch):
         raise AssertionError("the local backend must not call the vector store")
 
     monkeypatch.setattr(rr.client.vector_stores, "search", must_not_be_called)
-    out = rr.retrieve_docs_tool("anything", type="rules")
-    assert out.docs[0].id == "Rules_a::s2"
+    out = rr.retrieve_docs_tool("anything", type="how-to")
+    assert out.docs[0].id == "Howto_a::s2"
     assert out.docs[0].score == pytest.approx(1.0)
     # The top guidance article is held back here exactly as it is on the store.
     assert "Rules::top" not in [d.id for d in out.docs]
@@ -250,7 +244,7 @@ def test_an_embeddings_outage_falls_back_to_the_store(snapshot, monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(rr.client.vector_stores, "search", fake_search)
-    rr.retrieve_docs_tool("anything", type="rules")
+    rr.retrieve_docs_tool("anything", type="how-to")
     assert called, "the store was never asked"
 
 
@@ -263,7 +257,7 @@ def test_a_missing_snapshot_falls_back_to_the_store(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rr.client.vector_stores, "search",
                         lambda **kw: (called.append(kw), _Resp())[1])
-    rr.retrieve_docs_tool("anything", type="rules")
+    rr.retrieve_docs_tool("anything", type="how-to")
     assert called, "the store was never asked"
 
 
@@ -275,7 +269,7 @@ def test_the_backend_that_served_the_call_is_logged(snapshot, monkeypatch):
                         lambda event, fields, *, stream, ok=True: events.append(fields))
     monkeypatch.setattr(rr.client.vector_stores, "search",
                         lambda **kw: (_ for _ in ()).throw(AssertionError("not the store")))
-    rr.retrieve_docs_tool("anything", type="rules")
+    rr.retrieve_docs_tool("anything", type="how-to")
     assert events[0]["backend"] == "local"
 
 
@@ -290,21 +284,21 @@ def test_a_batch_answers_every_query_and_says_which(snapshot, monkeypatch):
     dim = settings.EMBEDDING_DIMENSIONS
     monkeypatch.setattr(rr, "_embed_queries",
                         lambda qs: [_unit(dim, 2), _unit(dim, 0)])
-    out = rr.retrieve_docs_tool(["about s2", "about s0"], type="rules")
+    out = rr.retrieve_docs_tool(["about s2", "about s0"], type="how-to")
     by_query = {}
     for d in out.docs:
         by_query.setdefault(d.query, []).append(d.id)
     assert set(by_query) == {"about s2", "about s0"}
-    assert by_query["about s2"][0] == "Rules_a::s2"
-    assert by_query["about s0"][0] == "Rules_a::s0"
+    assert by_query["about s2"][0] == "Howto_a::s2"
+    assert by_query["about s0"][0] == "Howto_a::s0"
 
 
 def test_one_query_is_untouched_by_the_batch_path(snapshot, monkeypatch):
     """A single query must behave exactly as it did: same budget, and no
     `query` label on results that have nothing to be told apart from."""
     rr = _wire_tool(monkeypatch, snapshot)
-    single = rr.retrieve_docs_tool("anything", type="rules")
-    as_list = rr.retrieve_docs_tool(["anything"], type="rules")
+    single = rr.retrieve_docs_tool("anything", type="how-to")
+    as_list = rr.retrieve_docs_tool(["anything"], type="how-to")
     assert [d.id for d in single.docs] == [d.id for d in as_list.docs]
     assert all(d.query is None for d in single.docs)
 
@@ -317,10 +311,10 @@ def test_a_chunk_answering_two_queries_goes_to_the_one_that_ranked_it_higher(sna
     dim = settings.EMBEDDING_DIMENSIONS
     weak, strong = _unit(dim, 2) * 0.5, _unit(dim, 2)
     monkeypatch.setattr(rr, "_embed_queries", lambda qs: [weak, strong])
-    out = rr.retrieve_docs_tool(["weaker", "stronger"], type="rules")
+    out = rr.retrieve_docs_tool(["weaker", "stronger"], type="how-to")
     ids = [d.id for d in out.docs]
     assert len(ids) == len(set(ids))
-    assert [d.query for d in out.docs if d.id == "Rules_a::s2"] == ["stronger"]
+    assert [d.query for d in out.docs if d.id == "Howto_a::s2"] == ["stronger"]
 
 
 def test_a_batch_shares_one_budget_instead_of_multiplying_it(snapshot, monkeypatch):
@@ -330,7 +324,7 @@ def test_a_batch_shares_one_budget_instead_of_multiplying_it(snapshot, monkeypat
     dim = settings.EMBEDDING_DIMENSIONS
     monkeypatch.setattr(rr, "BATCH_TOTAL_CAP", 4)
     monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2)] * len(qs))
-    out = rr.retrieve_docs_tool(["a", "b"], type="rules")
+    out = rr.retrieve_docs_tool(["a", "b"], type="how-to")
     assert len(out.docs) <= 4
 
 
@@ -340,14 +334,14 @@ def test_too_many_queries_is_refused_not_truncated(snapshot, monkeypatch):
     rr = _wire_tool(monkeypatch, snapshot)
     monkeypatch.setattr(rr, "BATCH_MAX_QUERIES", 3)
     with pytest.raises(ValueError, match="at most 3 queries"):
-        rr.retrieve_docs_tool(["a", "b", "c", "d"], type="rules")
+        rr.retrieve_docs_tool(["a", "b", "c", "d"], type="how-to")
 
 
 def test_an_empty_query_is_refused(snapshot, monkeypatch):
     rr = _wire_tool(monkeypatch, snapshot)
     for bad in ("", "   ", [], ["ok", ""]):
         with pytest.raises(ValueError, match="non-empty string"):
-            rr.retrieve_docs_tool(bad, type="rules")
+            rr.retrieve_docs_tool(bad, type="how-to")
 
 
 def test_a_repeated_query_does_not_eat_its_own_budget(snapshot, monkeypatch):
@@ -356,8 +350,8 @@ def test_a_repeated_query_does_not_eat_its_own_budget(snapshot, monkeypatch):
     rr = _wire_tool(monkeypatch, snapshot)
     dim = settings.EMBEDDING_DIMENSIONS
     monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2)] * len(qs))
-    once = rr.retrieve_docs_tool("x", type="rules")
-    twice = rr.retrieve_docs_tool(["x", "x"], type="rules")
+    once = rr.retrieve_docs_tool("x", type="how-to")
+    twice = rr.retrieve_docs_tool(["x", "x"], type="how-to")
     assert [d.id for d in twice.docs] == [d.id for d in once.docs]
     assert all(d.query is None for d in twice.docs)  # collapsed back to one query
 
@@ -369,7 +363,7 @@ def test_the_returned_list_is_ranked_by_score(snapshot, monkeypatch):
     dim = settings.EMBEDDING_DIMENSIONS
     monkeypatch.setattr(rr, "_embed_queries",
                         lambda qs: [_unit(dim, 0) * 0.4, _unit(dim, 2)])
-    out = rr.retrieve_docs_tool(["weak", "strong"], type="rules")
+    out = rr.retrieve_docs_tool(["weak", "strong"], type="how-to")
     scores = [d.score for d in out.docs]
     assert scores == sorted(scores, reverse=True)
 
@@ -381,7 +375,7 @@ def test_a_batch_logs_what_each_query_got(snapshot, monkeypatch):
     dim = settings.EMBEDDING_DIMENSIONS
     events = _capture_emit(monkeypatch)
     monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2), _unit(dim, 0)])
-    rr.retrieve_docs_tool(["about s2", "about s0"], type="rules")
+    rr.retrieve_docs_tool(["about s2", "about s0"], type="how-to")
     f = events[0]
     assert f["queries"] == ["about s2", "about s0"]
     assert [s["query_index"] for s in f["query_stats"]] == [0, 1]
@@ -397,5 +391,5 @@ def test_the_batch_log_is_capped_as_a_whole(snapshot, monkeypatch):
     events = _capture_emit(monkeypatch)
     monkeypatch.setattr(rr, "QUERY_LOG_MAX_CHARS", 10)
     monkeypatch.setattr(rr, "_embed_queries", lambda qs: [_unit(dim, 2)] * len(qs))
-    rr.retrieve_docs_tool(["a" * 20, "b" * 20, "c" * 20], type="rules")
+    rr.retrieve_docs_tool(["a" * 20, "b" * 20, "c" * 20], type="how-to")
     assert sum(len(q) for q in events[0]["queries"]) <= 10

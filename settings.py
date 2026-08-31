@@ -52,36 +52,19 @@ SOURCETYPE_DOC_HOWTO = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_HO
 SOURCETYPE_DOC_BRIEF = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_BRIEF}"
 SOURCETYPE_DOC_RULES = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_RULES}"
 
-# Per-sourceType chunk budget for the DEFAULT search — the one that runs when
-# `type` is omitted and searches every branch, merging the results by score.
-# Each entry costs one vector_stores.search, so this is also the per-branch
-# slice of the merged result.
+# Per-sourceType chunk budget. One entry costs one search, so this is also the
+# per-branch slice of a merged result.
+#
+# There used to be a second, larger table for the case where `type` was passed
+# explicitly, because `brief` and `rules` were split into per-area articles and
+# a typed lookup was meant to bring a whole article back. Those two branches are
+# no longer searched — an article is named and delivered whole by get_guidance —
+# and for the three that remain the two tables held the same numbers, so the
+# distinction went with them.
 TOP_K = {
     SOURCETYPE_DOC_PARADIGM: 3,
     SOURCETYPE_DOC_LANGUAGE: 3,
     SOURCETYPE_DOC_HOWTO: 3,
-    SOURCETYPE_DOC_BRIEF: 3,
-    SOURCETYPE_DOC_RULES: 3,
-}
-
-# Per-sourceType chunk budget used ONLY when `type` is passed explicitly, i.e.
-# when the whole response comes from that single branch.
-# `rules` and `brief` get more than the other branches: they are split into
-# per-area articles, and one targeted query is meant to cover the area. Raising
-# it in TOP_K instead would apply to the untyped search too, and drag those
-# chunks into every generic result at the expense of the other branches — hence
-# the separate table.
-# Sized against the corpus, not guessed: a typed lookup should be able to bring
-# back a whole per-area article. Measured on the current corpus the biggest are
-# 7 sections (brief) and 6 (rules); the quota is set one above each, so a normal
-# amount of growth does not silently start truncating. A quota below the article
-# guarantees it arrives incomplete, with the embedding choosing what is missing.
-TYPED_TOP_K = {
-    SOURCETYPE_DOC_PARADIGM: 3,
-    SOURCETYPE_DOC_LANGUAGE: 3,
-    SOURCETYPE_DOC_HOWTO: 3,
-    SOURCETYPE_DOC_BRIEF: 8,
-    SOURCETYPE_DOC_RULES: 7,
 }
 
 # Ceiling on the chunks ONE call returns when it carries several queries.

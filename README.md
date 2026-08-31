@@ -8,8 +8,8 @@ Transports:
 - **Streamable HTTP** for production via Uvicorn (mounted at `/mcp`).
 
 ## Core Tools
-- `lsfusion_get_guidance()`: Fetch mandatory brief and rules.
-- `lsfusion_retrieve_docs(query: string, type?: "language" | "paradigm" | "how-to" | "brief" | "rules")`: Official documentation search (the five doc-folder sourceTypes from the OpenAI Vector Store; English content only). All five branches are searched when `type` is omitted; only the top article of each guidance branch (`Brief`, `Rules`) is excluded from retrieval, since `lsfusion_get_guidance` already ships those two in full. The detailed per-area articles under `brief/` and `rules/` are retrieved like any other documentation.
+- `lsfusion_get_guidance(rules?: string, brief?: string)`: Read ONE guidance article whole. With no arguments, the top article of each branch — base material plus the complete map of that branch. With a name, that area's article entire: no search, no ranking, no excerpt.
+- `lsfusion_retrieve_docs(query: string | string[], type?: "language" | "paradigm" | "how-to")`: Official documentation search (English content only). All three reference branches are searched when `type` is omitted. `brief` and `rules` are still accepted for compatibility but are no longer part of the corpus — those two branches are addressed by name through `lsfusion_get_guidance`, and passing one here returns a pointer to that tool.
 - `lsfusion_report_feedback(report)`: Submit one anonymous, depersonalized reinforcement-quality signal (the feedback-loop sink) — classified by `signal_type` (doc gap, expectation-mismatch, unclear `eval` error, missing capability, RAG miss, other). The agent calls it — per the `get_guidance` workflow rule and only with user consent — when a task hit action-affecting friction. Server-side: anti-abuse caps, best-effort redaction, server-computed `dedup_fingerprint`, append to the `reports` event stream. Gated by `FEEDBACK_ENABLED`. Returns `{report_id, status, dedup_fingerprint}`. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Quickstart (local)

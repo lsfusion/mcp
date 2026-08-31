@@ -133,7 +133,7 @@ def reset_for_tests() -> None:
 
 def search(query_vector: np.ndarray, source_type: str, top_k: int,
            exclude_ids: set[str] | None = None,
-           exclude_slugs: set[str] | None = None) -> list[dict]:
+) -> list[dict]:
     """Top `top_k` chunks of ONE branch, best first.
 
     Exclusions are applied BEFORE the cut, not after — dropping them from a
@@ -153,8 +153,6 @@ def search(query_vector: np.ndarray, source_type: str, top_k: int,
         i = int(rows[pos])
         sid = snap.section_ids[i]
         if exclude_ids and sid in exclude_ids:
-            continue
-        if exclude_slugs and snap.slugs[i] in exclude_slugs:
             continue
         out.append({
             "section_id": sid,

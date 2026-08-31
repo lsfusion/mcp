@@ -44,23 +44,26 @@ def _record_calls(monkeypatch) -> list[dict]:
     return seen
 
 
-def test_allowed_types_are_the_five_branches():
+def test_allowed_types_are_the_three_searchable_plus_the_two_moved():
     assert set(rr.ALLOWED_TYPES) == {"language", "paradigm", "how-to", "brief", "rules"}
 
 
-def test_omitted_type_searches_every_branch(monkeypatch):
+def test_omitted_type_searches_every_searchable_branch(monkeypatch):
     calls = _record_calls(monkeypatch)
     rr.retrieve_docs_tool("anything")
     seen = [c["source_type"] for c in calls]
-    assert set(seen) == {"language", "paradigm", "how-to", "brief", "rules"}
-    assert len(seen) == 5
+    assert set(seen) == {"language", "paradigm", "how-to"}
+    assert len(seen) == 3
 
 
-def test_default_types_is_allowed_types():
-    assert set(rr.DEFAULT_TYPES) == set(rr.ALLOWED_TYPES)
+def test_default_types_is_the_searchable_branches_only():
+    # The moved branches are accepted, never searched — including by the
+    # untyped call, which is the one an assistant makes when it is unsure.
+    assert set(rr.DEFAULT_TYPES) == set(rr.SEARCHABLE_TYPES)
+    assert not set(rr.DEFAULT_TYPES) & set(rr.MOVED_TYPES)
 
 
-def test_guidance_branches_exclude_only_their_top_article():
+def _DELETED_test_guidance_branches_exclude_only_their_top_article():
     # get_guidance ships Brief.md / Rules.md in full; the detailed per-area
     # articles in the same folders must stay searchable.
     assert rr.GUIDANCE_TOP_SLUGS == {"brief": "Brief", "rules": "Rules"}
@@ -82,10 +85,33 @@ def test_non_guidance_branches_filter_by_source_type_only():
 
 
 def test_specific_type_searches_only_that_branch(monkeypatch):
-    for t in rr.ALLOWED_TYPES:
+    for t in rr.SEARCHABLE_TYPES:
         calls = _record_calls(monkeypatch)
         rr.retrieve_docs_tool("anything", type=t)
         assert [c["source_type"] for c in calls] == [t]
+
+
+def test_a_moved_branch_searches_nothing_and_says_where_it_went(monkeypatch):
+    # The failure this replaces: an empty `docs: []` is indistinguishable, to a
+    # model, from "no rules apply to this area".
+    for branch in rr.MOVED_TYPES:
+        calls = _record_calls(monkeypatch)
+        out = rr.retrieve_docs_tool("events", type=branch)
+        assert calls == [], f"{branch} must not be searched"
+        assert len(out.docs) == 1
+        text = out.docs[0].text
+        assert "MOVED" in text and "retrieved NOTHING" in text
+        assert "Nothing was ruled out" in text
+        assert f"lsfusion_get_guidance({branch}='<name>')" in text
+        # The map travels with the redirect, so the follow-up needs no round trip.
+        for area in ("logic", "view", "physical", "integration"):
+            assert f"`{area}`" in text
+
+
+def test_the_redirect_repeats_the_queries_it_did_not_run(monkeypatch):
+    _record_calls(monkeypatch)
+    out = rr.retrieve_docs_tool(["events", "WHEN"], type="rules")
+    assert "'events', 'WHEN'" in out.docs[0].text
 
 
 def test_bad_type_raises():
@@ -93,8 +119,8 @@ def test_bad_type_raises():
         rr.retrieve_docs_tool("anything", type="bogus")
 
 
-def test_every_allowed_type_has_a_top_k_mapping():
-    for t in rr.ALLOWED_TYPES:
+def test_every_searchable_type_has_a_top_k_mapping():
+    for t in rr.SEARCHABLE_TYPES:
         assert t in rr._TYPE_TO_TOP_K
 
 
@@ -178,7 +204,7 @@ def test_exclude_ids_adds_a_flat_nin_to_the_filter():
     }
 
 
-def test_exclude_ids_stays_flat_next_to_the_top_slug_filter():
+def _DELETED_test_exclude_ids_stays_flat_next_to_the_top_slug_filter():
     f = rr._filters_for_source("rules", ["A::x"])
     assert f == {
         "type": "and",
@@ -198,12 +224,8 @@ def test_empty_or_none_exclude_ids_adds_no_filter():
         assert rr._filters_for_source("how-to", empty) == {
             "type": "eq", "key": "sourceType", "value": "how-to",
         }
-        assert rr._filters_for_source("rules", empty) == {
-            "type": "and",
-            "filters": [
-                {"type": "eq", "key": "sourceType", "value": "rules"},
-                {"type": "ne", "key": "slug", "value": "Rules"},
-            ],
+        assert rr._filters_for_source("paradigm", empty) == {
+            "type": "eq", "key": "sourceType", "value": "paradigm",
         }
 
 
@@ -228,29 +250,33 @@ def test_exclude_ids_reaches_the_vector_store_filter(monkeypatch):
 def test_exclude_ids_is_passed_to_every_branch(monkeypatch):
     calls = _record_calls(monkeypatch)
     rr.retrieve_docs_tool("q", exclude_ids=["A::x"])
-    assert len(calls) == 5
+    assert len(calls) == 3
     assert all(c["exclude_ids"] == ["A::x"] for c in calls)
 
 
 # --- quotas ----------------------------------------------------------------
 
 
-def test_typed_quota_is_per_branch(monkeypatch):
-    expected = {"rules": 7, "brief": 8}
-    for t in rr.ALLOWED_TYPES:
+def test_every_branch_gets_the_same_quota_typed_or_not(monkeypatch):
+    # There used to be a second, larger table for typed calls, sized so one
+    # lookup could bring a whole per-area guidance article back. Those articles
+    # are not retrieved any more, and for the branches that remain both tables
+    # held the same number — so a typed call and an untyped one now spend the
+    # same per branch, and that is the invariant worth pinning.
+    for branch in rr.SEARCHABLE_TYPES:
         calls = _record_calls(monkeypatch)
-        rr.retrieve_docs_tool("q", type=t)
-        assert calls[0]["top_k"] == expected.get(t, 3)
+        rr.retrieve_docs_tool("q", type=branch)
+        assert [c["top_k"] for c in calls] == [3]
 
 
 def test_untyped_search_requests_three_per_branch(monkeypatch):
     calls = _record_calls(monkeypatch)
     rr.retrieve_docs_tool("q")
-    assert [c["top_k"] for c in calls] == [3] * 5
-    assert {c["source_type"] for c in calls} == set(rr.ALLOWED_TYPES)
+    assert [c["top_k"] for c in calls] == [3] * 3
+    assert {c["source_type"] for c in calls} == set(rr.SEARCHABLE_TYPES)
 
 
-def test_typed_quotas_can_return_a_whole_area_article():
+def _DELETED_test_typed_quotas_can_return_a_whole_area_article():
     # The default table stays uniform; the typed one is sized against the corpus
     # so that asking for one area brings back all of its sections rather than a
     # majority of them chosen by the embedding.
@@ -302,14 +328,11 @@ def test_logged_n_requested_follows_the_quota_actually_used(monkeypatch):
     _record_calls(monkeypatch)
     calls = _capture_emit(monkeypatch)
 
-    rr.retrieve_docs_tool("q", type="rules")
-    assert calls[-1]["fields"]["n_requested"] == 7  # typed rules quota, not 3
-
     rr.retrieve_docs_tool("q", type="how-to")
     assert calls[-1]["fields"]["n_requested"] == 3
 
     rr.retrieve_docs_tool("q")
-    assert calls[-1]["fields"]["n_requested"] == 15  # 5 branches x 3, rules included
+    assert calls[-1]["fields"]["n_requested"] == 9  # 3 branches x 3
 
 
 def test_log_carries_exclusion_count_not_the_ids(monkeypatch):
