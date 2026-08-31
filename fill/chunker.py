@@ -61,6 +61,14 @@ SOURCE_TYPES: frozenset[str] = frozenset(
     {"paradigm", "language", "how-to", "brief", "rules"}
 )
 
+# Which of those folders is INDEXED. Not the same question as which is a real
+# docs folder: `brief/` and `rules/` are still published, still linked from the
+# sidebar and still checked by the docs CI, they simply are not searched any
+# more — an article there is named and delivered whole by get_guidance, so
+# chunking it would only recreate the partial-delivery problem that change
+# removed.
+INDEXED_TYPES: frozenset[str] = SOURCE_TYPES - {"brief", "rules"}
+
 # ───────────────────────────── tuning constants ──────────────────────────────
 
 # Local cap measured with tiktoken's cl100k_base. The actual embedder may use

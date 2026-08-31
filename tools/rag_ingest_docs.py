@@ -46,7 +46,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from fill.chunker import SOURCE_TYPES, SourceType
+from fill.chunker import INDEXED_TYPES, SOURCE_TYPES, SourceType
 from fill.ingest import DEFAULT_MAX_WORKERS, IngestStats, ingest_files
 from fill.openai_client import FakeVectorStoreClient, VectorStoreClient
 from fill.state import State, load, save
@@ -379,7 +379,8 @@ def _build_file_sets(
         # sweep cannot help, since it only considers files the ledger does
         # NOT know, and these it does.
         all_docs = _all_docs(docs_root)
-        return all_docs, _tracked_but_gone(state, docs_root, path_for_key)
+        return all_docs, sorted(set(_tracked_but_gone(state, docs_root, path_for_key))
+                                | set(_tracked_but_not_indexed(state)))
 
     base_sha = state.last_indexed_docs_commit
     if base_sha is None:
@@ -405,6 +406,12 @@ def _build_file_sets(
     stale_abs: list[Path] = []
     missing_stale: list[str] = []
     for k in state.stale_files():
+        # Stale keys bypass `_is_en_doc` entirely, so a de-indexed branch has to
+        # be filtered here as well: without it a failed removal would mark the
+        # record stale and the NEXT run would happily re-chunk and re-upload
+        # the very article that was just taken out of the index.
+        if k.split("/")[0] not in INDEXED_TYPES:
+            continue
         path = path_for_key(k)
         if path.is_file():
             stale_abs.append(path)
@@ -418,8 +425,32 @@ def _build_file_sets(
     # while the ledger was behind, or during a cycle that failed before
     # stamping — is invisible to it, so the ledger is checked against disk as
     # well. Costs one set difference and no API call.
-    return files_to_process, sorted(set(removed_keys) | set(
-        _tracked_but_gone(state, docs_root, path_for_key)))
+    return files_to_process, sorted(set(removed_keys)
+                                    | set(_tracked_but_gone(state, docs_root, path_for_key))
+                                    | set(_tracked_but_not_indexed(state)))
+
+
+def _tracked_but_not_indexed(state: State) -> list[str]:
+    """Ledger keys in a branch that is no longer indexed.
+
+    Nothing else can see these, and it is worth being precise about why. The
+    git diff does not: the article did not change, it is still published and
+    still on disk. `_tracked_but_gone` does not: it asks whether the FILE is
+    missing, and it is not. The orphan sweep does not: it only considers store
+    files the ledger does NOT know, and the ledger knows exactly these. Left
+    alone they would sit in the store forever — unreachable, since no branch
+    filter ever names them again, but still counted, still paid for, and ready
+    to be resurrected by any future reconcile that rebuilds the ledger from
+    store attributes.
+
+    Idempotent by construction: after one clean run the keys are gone from the
+    ledger, so this returns [] for good.
+    """
+    orphaned = sorted(k for k in state.files if k.split("/")[0] not in INDEXED_TYPES)
+    if orphaned:
+        log.info("tracked but no longer indexed (%d): %s",
+                 len(orphaned), ", ".join(orphaned[:10]))
+    return orphaned
 
 
 def _tracked_but_gone(
@@ -438,7 +469,7 @@ def _all_docs(docs_root: Path) -> list[Path]:
     # Type-first: ingest the English slice docs/<type>/en/*.md only. `docs/images`
     # and `docs/<type>/AGENTS.md` are skipped (neither sits under <type>/en).
     out: list[Path] = []
-    for t in sorted(SOURCE_TYPES):
+    for t in sorted(INDEXED_TYPES):
         en = docs_root / t / "en"
         if en.is_dir():
             out += [p for p in en.rglob("*.md") if p.is_file()]
@@ -451,7 +482,7 @@ def _is_en_doc(repo_path: str) -> bool:
     return (
         len(parts) >= 4
         and parts[0] == "docs"
-        and parts[1] in SOURCE_TYPES
+        and parts[1] in INDEXED_TYPES
         and parts[2] == "en"
         and repo_path.endswith(".md")
     )

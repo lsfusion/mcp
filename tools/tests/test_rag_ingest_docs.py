@@ -117,20 +117,20 @@ def test_forced_full_scan_removes_docs_the_ledger_still_tracks(tmp_path):
     it only looks at files the ledger does NOT know."""
     root = _platform_root(
         tmp_path,
-        files={"rules/Rules_execution.md": _md("Rules execution", "## S\n\nfoo")},
+        files={"how-to/Howto_execution.md": _md("How-to execution", "## S\n\nfoo")},
     )
     client = FakeVectorStoreClient()
 
     # First cycle indexes the doc under its old name.
     old_root = _platform_root(
         tmp_path / "old",
-        files={"rules/Rules_physical_model.md": _md("Rules physical model", "## S\n\nfoo")},
+        files={"how-to/Howto_physical_model.md": _md("How-to physical model", "## S\n\nfoo")},
     )
     code, _ = run(platform_root=old_root, client=client, git=FakeGitRunner(head="c1"),
                   vector_store_id_override="vs_x")
     assert code == EXIT_OK
     state_path = old_root / ".rag" / "openai-state.json"
-    assert "rules/Rules_physical_model.md" in load(state_path).files
+    assert "how-to/Howto_physical_model.md" in load(state_path).files
 
     # Carry that ledger over to the renamed tree and force a full scan.
     (root / ".rag").mkdir(parents=True, exist_ok=True)
@@ -145,7 +145,7 @@ def test_forced_full_scan_removes_docs_the_ledger_still_tracks(tmp_path):
 
     assert code == EXIT_OK
     assert stats.files_removed == 1
-    assert "rules/Rules_physical_model.md" not in load(root / ".rag" / "openai-state.json").files
+    assert "how-to/Howto_physical_model.md" not in load(root / ".rag" / "openai-state.json").files
 
 
 def test_first_run_does_forced_full_scan_and_stamps_sentinels(tmp_path):
@@ -423,13 +423,17 @@ def test_unknown_type_folder_is_ignored(tmp_path):
     assert "bogus/X.md" not in state.files
 
 
-def test_brief_and_rules_folders_are_valid_sourcetypes(tmp_path):
-    """brief/ and rules/ are first-class categories (Phase-1 single files)."""
+def test_brief_and_rules_are_real_folders_but_are_never_indexed(tmp_path):
+    """Being a valid docs folder and being in the index are different questions.
+    brief/ and rules/ are still published, still in the sidebar and still
+    checked by the docs CI — they are simply not chunked any more, because an
+    article there is named and delivered whole."""
     root = _platform_root(
         tmp_path,
         files={
             "brief/Brief.md": _md("Brief", "## Map\n\noverview"),
-            "rules/Workflow.md": _md("Workflow", "## Rule\n\ndo this"),
+            "rules/Rules_logic.md": _md("Rules logic", "## Rule\n\ndo this"),
+            "how-to/Howto_x.md": _md("How-to x", "## S\n\nkept"),
         },
     )
     code, stats = run(
@@ -439,8 +443,44 @@ def test_brief_and_rules_folders_are_valid_sourcetypes(tmp_path):
     assert code == EXIT_OK
     assert stats.errors == []
     state = load(root / ".rag" / "openai-state.json")
-    assert state.files["brief/Brief.md"].indexed_sourceType == "brief"
-    assert state.files["rules/Workflow.md"].indexed_sourceType == "rules"
+    assert set(state.files) == {"how-to/Howto_x.md"}
+
+
+def test_a_de_indexed_branch_still_on_disk_is_removed_from_the_store(tmp_path):
+    """The removal path nothing else covers. The article did not change, and it
+    is still on disk and still published — so the git diff cannot see it, the
+    tracked-but-gone check cannot see it (the file exists), and the orphan sweep
+    cannot see it (the ledger knows it). Without a check of its own the chunks
+    would stay in the store forever."""
+    files = {"rules/Rules_logic.md": _md("Rules logic", "## S\n\nfoo"),
+             "how-to/Howto_x.md": _md("How-to x", "## S\n\nbar")}
+    root = _platform_root(tmp_path, files=files)
+    client = FakeVectorStoreClient()
+
+    # Index it while the branch still counted, by pretending it does.
+    import fill.chunker as chunker
+    import tools.rag_ingest_docs as ingest
+    was = ingest.INDEXED_TYPES
+    ingest.INDEXED_TYPES = chunker.SOURCE_TYPES
+    try:
+        code, _ = run(platform_root=root, client=client,
+                      git=FakeGitRunner(head="c1"), vector_store_id_override="vs_x")
+        assert code == EXIT_OK
+        assert "rules/Rules_logic.md" in load(root / ".rag" / "openai-state.json").files
+    finally:
+        ingest.INDEXED_TYPES = was
+
+    # Now the branch is gone from the index while the file stays put.
+    code, stats = run(platform_root=root, client=client,
+                      git=FakeGitRunner(head="c2"), vector_store_id_override="vs_x")
+    assert code == EXIT_OK and stats.errors == []
+    state = load(root / ".rag" / "openai-state.json")
+    assert set(state.files) == {"how-to/Howto_x.md"}
+
+    # And it stays removed: a second pass has nothing left to do.
+    code, stats = run(platform_root=root, client=client,
+                      git=FakeGitRunner(head="c3"), vector_store_id_override="vs_x")
+    assert code == EXIT_OK and stats.files_removed == 0
 
 
 # ─── vector_store_id resolution ────────────────────────────────────────────
