@@ -179,11 +179,17 @@ ARTICLE_NOTICE = (
     "article's length as sent, so if what you are holding is visibly shorter "
     "than that, you are holding a preview — and if your client saved this "
     "result to a file, read that file IN FULL before applying anything from "
-    "it. Apply each rule at its "
-    "stated strength: MUST / MUST NOT are binding, SHOULD / SHOULD NOT are "
-    "recommendations. Nothing else was read: the other articles of this branch "
+    "it.{strength} Nothing else was read: the other articles of this branch "
     "are listed in the map inside its top article, which "
     "`lsfusion_get_guidance()` with no arguments returns."
+)
+
+# Only the `rules` branch has rule strengths; a brief article has none, and
+# telling a reader to honour them there quietly reframes a capability map as a
+# set of obligations.
+STRENGTH_CLAUSE = (
+    " Apply each rule at its stated strength: MUST / MUST NOT are binding,"
+    " SHOULD / SHOULD NOT are recommendations."
 )
 
 # Answer to a name that does not resolve. Deliberately a tool SUCCESS carrying
@@ -281,7 +287,8 @@ def read_article(branch: str, name: str, timeout: float | None = None) -> str:
         return _not_found(branch, name, " (the site answered with a page, not the article)")
     key = name.strip().lower()
     label = "top" if key in TOP_ALIASES else key
-    return "\n".join((ARTICLE_NOTICE.format(branch=branch, name=label), "",
+    return "\n".join((ARTICLE_NOTICE.format(branch=branch, name=label,
+                                          strength=STRENGTH_CLAUSE if branch == "rules" else ""), "",
                        fenced(branch, label, body)))
 
 
