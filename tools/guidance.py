@@ -22,8 +22,11 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 import urllib.error
 import urllib.request
+
+from tools.event_log import emit
 
 GUIDANCE_BASE_URL = os.getenv("GUIDANCE_BASE_URL", "https://docs.lsfusion.org/")
 BRIEF_URL = os.getenv("GUIDANCE_BRIEF_URL", f"{GUIDANCE_BASE_URL}Brief.md")
@@ -72,7 +75,10 @@ SERVER_INSTRUCTIONS = (
     "separate article, read WHOLE with `lsfusion_get_guidance(rules='<area>')` "
     "— never searched, never excerpted. The map states, per area, the point at "
     "which reading it stops being optional; an area you did not read is not an "
-    "area without rules.\n\n"
+    "area without rules. Read an area's brief (`brief='<area>'`) when nothing "
+    "in hand names a likely construct for the task; use `lsfusion_retrieve_docs` "
+    "to assess candidates that are already named, and read the brief if none "
+    "looks suitable.\n\n"
     "Other tools: `lsfusion_retrieve_docs` searches the reference "
     "documentation (`language`, `paradigm`, `how-to`); "
     "`lsfusion_report_feedback` submits a consented, depersonalized quality "
@@ -142,9 +148,15 @@ def stamped_guidance(urls: list[str] | None = None, timeout: float | None = None
     """
     urls = [BRIEF_URL, RULES_URL] if urls is None else urls
     timeout = FETCH_TIMEOUT if timeout is None else timeout
-    bodies = [_fetch(u, timeout) for u in urls]
+    start = time.monotonic()
+    try:
+        bodies = [_fetch(u, timeout) for u in urls]
+    except Exception as exc:  # noqa: BLE001 — log, then let it propagate unchanged
+        _log_guidance("top", None, "error", start, error=exc)
+        raise
     blocks = [fenced(_branch_of(u), "top", b) for u, b in zip(urls, bodies)]
     body = "\n\n".join(bodies)
+    _log_guidance("top", None, "ok", start, chars=len(body), rev=guidance_version(body))
     return f"{_version_marker(body)}\n{GUIDANCE_NOTICE}\n\n" + "\n\n".join(blocks)
 
 
@@ -213,6 +225,40 @@ NOT_FOUND_NOTICE = (
 )
 
 
+def _log_guidance(branch: str, area: str | None, outcome: str, start: float, *,
+                  chars: int | None = None, rev: str | None = None,
+                  error: BaseException | None = None) -> None:
+    """One `get_guidance` event, never the article text. NEVER raises.
+
+    This is what makes adoption measurable at all: `retrieve_docs` has been
+    logged from the start, guidance never was, so whether an assistant reads the
+    brief of an area — or reads the rules at all — has been a matter of
+    anecdote. `outcome` separates a served article from a name that resolved
+    to nothing, which the caller-facing text deliberately does not distinguish
+    loudly.
+    """
+    try:
+        fields: dict = {
+            "branch": branch,            # rules | brief | top
+            "area": area,                # None for the start-of-session call
+            "outcome": outcome,          # ok | not_found | error
+            "chars": chars,
+            "rev": rev,
+            "latency_ms": int((time.monotonic() - start) * 1000),
+        }
+        if error is not None:
+            # Class and HTTP status only. `str(exc)` is not safe to log: a
+            # refused redirect carries the full target URL, query string and
+            # all, and a BadStatusLine carries the raw response line.
+            fields["error"] = type(error).__name__
+            code = getattr(error, "code", None)
+            if isinstance(code, int):
+                fields["http_status"] = code
+        emit("get_guidance", fields, stream="retrieval", ok=(outcome == "ok"))
+    except Exception:  # noqa: BLE001 — logging must never break the call
+        pass
+
+
 def article_slug(branch: str, name: str) -> str:
     """Published slug for one guidance article, or raise ValueError.
 
@@ -261,9 +307,13 @@ def read_article(branch: str, name: str, timeout: float | None = None) -> str:
     worse than a loud failure.
     """
     timeout = FETCH_TIMEOUT if timeout is None else timeout
+    start = time.monotonic()
+    key = name.strip().lower()
+    label = "top" if key in TOP_ALIASES else key
     try:
         url = article_url(branch, name)
     except ValueError:
+        _log_guidance(branch, label, "not_found", start)
         return _not_found(branch, name)
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (https only, fixed host)
@@ -273,7 +323,12 @@ def read_article(branch: str, name: str, timeout: float | None = None) -> str:
         if exc.code == 404:
             # The site answers an unknown slug with a full HTML 404 page, so the
             # status is the only reliable signal here — never the body.
+            _log_guidance(branch, label, "not_found", start)
             return _not_found(branch, name)
+        _log_guidance(branch, label, "error", start, error=exc)
+        raise
+    except Exception as exc:  # noqa: BLE001 — log, then let it propagate unchanged
+        _log_guidance(branch, label, "error", start, error=exc)
         raise
     # Sanitizing the name secures the URL we ASK for, not the page we get back.
     # urlopen follows redirects silently, so a moved or misconfigured slug could
@@ -282,11 +337,12 @@ def read_article(branch: str, name: str, timeout: float | None = None) -> str:
     # page. Neither is a rules article, and passing either off as one is worse
     # than any failure, so both become the not-found answer.
     if landed != url:
+        _log_guidance(branch, label, "not_found", start)
         return _not_found(branch, name, f" (the request for {url} was redirected to {landed})")
     if body.lstrip()[:1] == "<":
+        _log_guidance(branch, label, "not_found", start)
         return _not_found(branch, name, " (the site answered with a page, not the article)")
-    key = name.strip().lower()
-    label = "top" if key in TOP_ALIASES else key
+    _log_guidance(branch, label, "ok", start, chars=len(body), rev=guidance_version(body))
     return "\n".join((ARTICLE_NOTICE.format(branch=branch, name=label,
                                           strength=STRENGTH_CLAUSE if branch == "rules" else ""), "",
                        fenced(branch, label, body)))

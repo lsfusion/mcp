@@ -99,3 +99,15 @@ def test_retrieve_docs_publishes_the_id_and_exclude_ids_contract(mcp_server):
     defs = tool.outputSchema.get("$defs", {})
     doc_item = defs.get("DocItem") or {}
     assert "id" in doc_item.get("properties", {}), tool.outputSchema
+
+
+def test_the_batch_cap_is_in_the_schema_from_the_same_constant(mcp_server):
+    # The number was learned from the error message and nowhere else. It must
+    # come from the constant the runtime enforces, or the two drift.
+    import asyncio
+    from settings import BATCH_MAX_QUERIES
+    tools = asyncio.run(mcp_server.list_tools())
+    q = next(t for t in tools if t.name == "lsfusion_retrieve_docs").inputSchema["properties"]["query"]
+    array_branch = next(b for b in q["anyOf"] if b.get("type") == "array")
+    assert array_branch["maxItems"] == BATCH_MAX_QUERIES
+    assert f"at most {BATCH_MAX_QUERIES}" in q["description"]

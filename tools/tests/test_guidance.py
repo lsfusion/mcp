@@ -260,3 +260,67 @@ def test_a_soft_404_page_is_not_served_as_an_article(monkeypatch):
                         lambda url, timeout=None: _FakeResp(b"<!doctype html><h1>Not found</h1>", url))
     out = g.read_article("rules", "logic")
     assert "NO SUCH GUIDANCE ARTICLE" in out and "not the article" in out
+
+
+# --- every call is logged, and the outcome is classified --------------------
+
+
+def _capture(monkeypatch):
+    calls: list[dict] = []
+    monkeypatch.setattr(g, "emit", lambda event, fields, *, stream, ok=True:
+                        calls.append({"event": event, "fields": fields, "stream": stream, "ok": ok}))
+    return calls
+
+
+def test_a_served_article_logs_ok_with_its_size_and_revision(monkeypatch):
+    body = "RULE BODY"
+    monkeypatch.setattr(g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(body.encode(), url))
+    calls = _capture(monkeypatch)
+
+    g.read_article("rules", "logic")
+
+    (c,) = calls
+    assert c["event"] == "get_guidance" and c["stream"] == "retrieval" and c["ok"] is True
+    f = c["fields"]
+    assert f["branch"] == "rules" and f["area"] == "logic" and f["outcome"] == "ok"
+    assert f["chars"] == len(body) and f["rev"] == g.guidance_version(body)
+    assert "text" not in f and body not in str(f)
+
+
+def test_a_miss_is_logged_as_not_found_not_as_an_error(monkeypatch):
+    # A bad name and a 404 are ANSWERS to the caller; the log must say so too,
+    # or every typo would read as an outage in the adoption numbers.
+    calls = _capture(monkeypatch)
+    monkeypatch.setattr(g.urllib.request, "urlopen",
+                        lambda url, timeout=None: (_ for _ in ()).throw(_FakeHTTPError(404)))
+    g.read_article("rules", "nosuch")
+    g.read_article("rules", "Brief_forms")  # rejected before any request
+    assert [c["fields"]["outcome"] for c in calls] == ["not_found", "not_found"]
+    assert all(c["ok"] is False for c in calls)
+
+
+def test_a_failure_is_logged_as_error_and_still_propagates(monkeypatch):
+    calls = _capture(monkeypatch)
+    monkeypatch.setattr(g.urllib.request, "urlopen",
+                        lambda url, timeout=None: (_ for _ in ()).throw(urllib.error.URLError("down")))
+    with pytest.raises(urllib.error.URLError):
+        g.read_article("brief", "view")
+    (c,) = calls
+    assert c["fields"]["outcome"] == "error" and c["ok"] is False
+    assert "URLError" in c["fields"]["error"]
+
+
+def test_the_start_of_session_call_is_logged_as_top(monkeypatch):
+    monkeypatch.setattr(g.urllib.request, "urlopen",
+                        lambda url, timeout=None: _FakeResp(f"body of {url}".encode(), url))
+    calls = _capture(monkeypatch)
+    g.stamped_guidance()
+    (c,) = calls
+    assert c["fields"]["branch"] == "top" and c["fields"]["area"] is None
+    assert c["fields"]["outcome"] == "ok"
+
+
+def test_logging_can_never_break_the_call(monkeypatch):
+    monkeypatch.setattr(g.urllib.request, "urlopen", lambda url, timeout=None: _FakeResp(b"x", url))
+    monkeypatch.setattr(g, "emit", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full")))
+    assert "=== END" in g.read_article("rules", "logic")

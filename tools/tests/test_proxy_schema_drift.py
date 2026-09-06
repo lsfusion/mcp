@@ -298,3 +298,34 @@ def test_no_guidance_article_still_points_at_the_retired_lookup(branch):
              if "type='rules'" in p.read_text(encoding="utf-8")
              or "type='brief'" in p.read_text(encoding="utf-8")]
     assert not stale, f"these still instruct a call the server rejects: {stale}"
+
+
+
+# --- the batch cap is a NUMBER, and numbers drift too -------------------------
+#
+# The proxies cannot read BATCH_MAX_QUERIES, so they hard-code it. Field
+# coverage cannot see a wrong number; this can. Note the constant is also
+# settable from the environment — the guard compares against whatever value the
+# central server would actually enforce in this run.
+from settings import BATCH_MAX_QUERIES
+
+
+def test_platform_query_max_items_matches_the_central_cap():
+    region = _brace_slice(_need(PLATFORM), "JSONObject retrieveDocsDescriptor(")
+    m = re.search(r'\.put\("maxItems",\s*(\d+)\)', region)
+    assert m, "platform MCPDispatcher: `query` array branch declares no maxItems"
+    assert int(m.group(1)) == BATCH_MAX_QUERIES
+
+
+def test_plugin_java_query_max_items_matches_the_central_cap():
+    region = _brace_slice(_need(PLUGIN_JAVA), "JSONObject buildRetrieveDocsToolDescriptor(")
+    m = re.search(r'\.put\("maxItems",\s*(\d+)\)', region)
+    assert m, "plugin McpBaseService: `query` array branch declares no maxItems"
+    assert int(m.group(1)) == BATCH_MAX_QUERIES
+
+
+def test_plugin_kotlin_states_the_cap_in_prose():
+    # The annotation path has no machine constraint on the list, so the
+    # number lives only in the description there — check it is the right one.
+    region = _brace_slice(_need(PLUGIN_KT), "suspend fun retrieveDocs(")
+    assert f"At most {BATCH_MAX_QUERIES} DISTINCT" in region
