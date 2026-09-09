@@ -72,7 +72,7 @@ TOP_K = {
 # chunks (~70 KB), and the whole reason a per-branch quota exists is the
 # caller's context, not its patience. Under this cap a four-query batch costs
 # ~28 KB — less than the calls it replaces. A single query is unaffected: its
-# own quota (15 untyped, 7-8 typed) is already below the cap.
+# own quota (9 untyped, 3 typed) is already below the cap.
 BATCH_TOTAL_CAP = int(os.environ.get("BATCH_TOTAL_CAP", "24"))
 
 # Most queries a batch may carry. Beyond this the split leaves each query too
