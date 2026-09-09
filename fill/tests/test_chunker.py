@@ -359,7 +359,10 @@ def test_code_fence_with_h3_inside_does_not_split(tmp_path):
 # ───────────────────────────── real-data invariant ───────────────────────────
 
 
-REAL_DOCS = Path(__file__).resolve().parents[3] / "platform" / "docs" / "en"
+# The docs moved to docs/<type>/{en,ru}/ long ago; this pointed at the flat
+# pre-migration layout, so the sample list resolved to nothing and the
+# invariant below silently checked ZERO files. Search the type folders.
+REAL_DOCS = Path(__file__).resolve().parents[3] / "platform" / "docs"
 
 
 def _real_md_samples():
@@ -375,9 +378,9 @@ def _real_md_samples():
     ]
     out = []
     for name in interesting:
-        p = REAL_DOCS / name
-        if p.is_file():
+        for p in REAL_DOCS.glob(f"*/en/{name}"):
             out.append(p)
+            break
     return out
 
 
@@ -795,3 +798,32 @@ def test_keywords_accepts_what_a_human_writes():
     assert _keywords(["", "a", "a", " b "]) == "a, b"      # blanks and repeats dropped
     assert _keywords(None) == "" and _keywords([]) == "" and _keywords(42) == ""
     assert len(_keywords(["x" * 400])) <= 256
+
+
+def test_merging_siblings_keeps_the_article_keywords():
+    """A merged section used to lose them. Keywords are declared per article,
+    so every part carries the same value — and a long article, whose siblings
+    are exactly what gets merged, would have been silently un-tagged."""
+    from fill.chunker import Section, _build_merged_section
+
+    def part(last: str) -> Section:
+        return Section(slug="Doc", section_id=f"Doc::{last}", section_name=last,
+                       heading_path=f"Doc > {last}", source_url="u",
+                       source_type="language", raw_content=f"body of {last}",
+                       keywords="argmax, object with the largest value")
+
+    merged = _build_merged_section([part("syntax"), part("examples")], "Doc")
+    assert merged.keywords == "argmax, object with the largest value"
+    assert merged.section_id == "Doc::syntax+examples"
+
+
+def test_merging_tolerates_parts_without_keywords():
+    from fill.chunker import Section, _build_merged_section
+
+    def part(last: str, kw: str) -> Section:
+        return Section(slug="Doc", section_id=f"Doc::{last}", section_name=last,
+                       heading_path=f"Doc > {last}", source_url="u",
+                       source_type="language", raw_content="x", keywords=kw)
+
+    assert _build_merged_section([part("a", ""), part("b", "")], "Doc").keywords == ""
+    assert _build_merged_section([part("a", ""), part("b", "kw")], "Doc").keywords == "kw"

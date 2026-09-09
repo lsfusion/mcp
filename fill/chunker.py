@@ -647,6 +647,10 @@ def _build_merged_section(parts: list[Section], parent_hp: str) -> Section:
         source_url=parts[0].source_url,
         source_type=parts[0].source_type,
         raw_content=merged_content,
+        # Keywords are declared per ARTICLE, so every part carries the same
+        # value — but dropping them here silently un-tagged any merged section,
+        # which is exactly where a long article's siblings end up.
+        keywords=next((p.keywords for p in parts if p.keywords), ""),
     )
 
 
