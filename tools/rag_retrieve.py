@@ -35,6 +35,7 @@ from settings import (
     QUERY_LOG_MAX_CHARS,
     ERROR_LOG_MAX_CHARS,
 )
+from tools.caller import caller_fields
 from tools.event_log import emit
 from tools import local_index
 
@@ -458,6 +459,8 @@ def _log_retrieval(
             # best-scoring chunk. Gap analytics compare stores, not orders.
             "top_score": (max(h.score for h in hits) if hits else None),
             "latency_ms": int((time.monotonic() - start) * 1000),
+            # Which client, never which model — see tools/caller.py.
+            **caller_fields(),
             "results": [
                 {
                     "rank": i + 1,

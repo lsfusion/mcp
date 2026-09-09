@@ -26,6 +26,7 @@ import time
 import urllib.error
 import urllib.request
 
+from tools.caller import caller_fields
 from tools.event_log import emit
 
 GUIDANCE_BASE_URL = os.getenv("GUIDANCE_BASE_URL", "https://docs.lsfusion.org/")
@@ -245,6 +246,7 @@ def _log_guidance(branch: str, area: str | None, outcome: str, start: float, *,
             "chars": chars,
             "rev": rev,
             "latency_ms": int((time.monotonic() - start) * 1000),
+            **caller_fields(),
         }
         if error is not None:
             # Class and HTTP status only. `str(exc)` is not safe to log: a
