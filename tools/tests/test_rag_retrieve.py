@@ -598,3 +598,15 @@ def test_too_many_queries_says_why_not_just_no(monkeypatch):
     msg = str(e.value)
     assert "cannot both answer every query and stay inside one response" in msg
     assert "costs the same as the separate calls" in msg
+
+
+def test_the_score_does_not_present_itself_as_confidence(monkeypatch):
+    # "Similarity, higher = closer" invites the one reading the measurements
+    # refuse: that a high number means a good answer. Among chunks agents later
+    # reported on, the ones they called misleading did not score lower than the
+    # ones they called helpful.
+    from tools.rag_retrieve import DocItem
+    d = DocItem.model_fields["score"].description
+    assert "no absolute scale" in d
+    assert "does not establish" in d
+    assert "decided by reading it" in d

@@ -40,7 +40,7 @@ class DocItem(BaseModel):
     text: str = Field(..., description="Retrieved text snippet.")
     score: float | None = Field(
         default=None,
-        description="Similarity to the query, higher = closer. NULL when no query was given — an article traversal has nothing to be similar to, and inventing a number there would make the ordering look like a ranking. When it is null the list is in document order; when it is set the list is ranked by it, descending.")
+        description="Cosine similarity to the query. It orders THIS response and means nothing outside it: the number has no absolute scale, so comparing it against one from another call, or against a remembered figure, compares nothing. Read it as rank, not as confidence — a high score does not establish that a chunk answers the question, and a low one does not establish that the documentation lacks it. That is measured, not cautious: among chunks whose retrieval agents later reported on, the ones they called misleading did not score lower than the ones they called helpful. Whether a chunk answers your question is decided by reading it. NULL when no query was given — an article traversal has nothing to be similar to, and inventing a number would make document order look like a ranking; when it is null the list is in document order, when it is set the list is ranked by it, descending.")
     query: str | None = Field(
         default=None,
         description="Which of the submitted queries this chunk answers. Null when only one was submitted.")
