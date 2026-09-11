@@ -20,7 +20,7 @@ from settings import (
     SOURCETYPE_DOCUMENTATION_RULES,
     SOURCETYPE,
     RESULT_MAX_CHARS,
-    SCORE_FLOOR_FRACTION,
+    SCORE_FLOOR_GAP,
     EMBEDDING_MODEL,
     ARTICLE_MAX_NAMES,
     BATCH_MAX_QUERIES,
@@ -411,10 +411,12 @@ def retrieve_docs_tool(
                         h.query = queries[i] if len(queries) > 1 else None
                     cells.append(cell)
         # Relevance floor, applied ACROSS branches and before the budget so the
-        # room freed goes to nothing rather than to noise. Relative to the best
-        # score in this response, because "good" only means anything next to
-        # what else was found: an absolute threshold would answer a hard query
-        # with nothing and an easy one with everything.
+        # room freed goes to nothing rather than to noise. Measured DOWN from
+        # the best score this query found, because "good" only means anything
+        # next to what else was found: a fixed threshold would answer a hard
+        # query with nothing and an easy one with everything. A gap rather than
+        # a fraction, because a fraction of a low best score lands in the noise
+        # — see SCORE_FLOOR_GAP for the numbers that settled it.
         #
         # Across BRANCHES but within ONE query. A branch whose own best is below
         # the floor is not answering the question, and dropping it whole is the
@@ -429,7 +431,7 @@ def retrieve_docs_tool(
                 best_score = max((h.score for cell in group for h in cell), default=None)
                 if best_score is None or best_score <= 0:
                     continue
-                floor = best_score * SCORE_FLOOR_FRACTION
+                floor = best_score - SCORE_FLOOR_GAP
                 cells[q0:q0 + per_q] = [[h for h in cell if h.score >= floor]
                                         for cell in group]
         n_candidates = sum(len(c) for c in cells)

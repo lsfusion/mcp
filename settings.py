@@ -38,20 +38,36 @@ SOURCETYPE_DOCUMENTATION_RULES = "rules"
 # compatibility with consumers that key on the legacy spelling.
 
 
-# Relevance floor, as a fraction of the best score in the response.
+# Relevance floor: how far below the best score of its own query a chunk may
+# sit and still be worth returning. An absolute gap in cosine space, not a
+# fraction of the best score.
 #
-# What the old per-branch chunk count was really doing, in the unit it was
-# really doing it in. Removing the count uncovered this: with only a size
-# budget left, a search fills 36,000 characters every time, and the tail it
-# fills them with is noise — measured on the corpus, two RANDOM chunks score
-# 0.264 median and 0.552 at p99, and the chunks the budget was reaching for sat
-# at 0.501.
+# It was a fraction, calibrated on probe queries whose vector WAS a chunk's
+# vector — so the best score was 1.0 and 0.75 of it sat far above noise. Real
+# queries never match a chunk that closely: measured over 200 taken from the
+# live log, the best score is 0.558 median and 0.458 at p10. The same fraction
+# there lands at 0.34, and the corpus's own noise is 0.262 median with a p99 of
+# 0.551 — so on a flat query the floor was cutting almost nothing and the size
+# budget went back to filling itself with near-noise.
 #
-# The number is not invented. Across 200 probe queries, 0.75 x the best score
-# keeps a median of 9 chunks — which is what the old 3-per-branch quota
-# returned — while ADAPTING where the quota could not: 27 at p90, when a query
-# genuinely has that many good answers, and 1 when it has one.
-SCORE_FLOOR_FRACTION = float(os.environ.get("SCORE_FLOOR_FRACTION", "0.75"))
+# That p99 is worth stating plainly: two RANDOM chunks of this corpus score
+# about what a typical query's BEST match does. Dense retrieval here has a low
+# ceiling, and a rule anchored to the top score rather than to a fraction of it
+# is the one that survives that.
+#
+# Measured over the same 200 live queries, chunks returned:
+#                   =1    2-4   5-9  10-19   20+   median   hits the budget
+#   0.75 x max       1     12    54     91    42       12         27%
+#   max - 0.05      36    106    46     12     0        3          0%
+#   max - 0.07      18     80    73     27     2        5          2%
+#   max - 0.10       7     39    81     56    17        7         11%
+#
+# 0.10 is chosen at the EDGES, not the median. A single chunk is the failure
+# this whole design is about — a chunk cannot show the constraint it depends on
+# — and 0.05 leaves 36 queries of 200 holding exactly one. At the other end it
+# keeps a median of 7, near the 9 the old per-branch quota returned, and cuts
+# budget-bound responses from 27% to 11%. Nothing is ever returned empty.
+SCORE_FLOOR_GAP = float(os.environ.get("SCORE_FLOOR_GAP", "0.10"))
 
 # Ceiling on the total TEXT one call returns, in characters.
 #

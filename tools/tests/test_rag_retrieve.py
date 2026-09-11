@@ -500,21 +500,23 @@ def test_the_tail_below_the_floor_is_dropped(monkeypatch):
     hits = _serve(monkeypatch, [])
     monkeypatch.setattr(rr, "_search_branch", lambda v, s, e=None: [
         _hit("how-to", id=f"A{i}::s", score=sc, text="x" * 10)
-        for i, sc in enumerate((1.0, 0.9, 0.8, 0.7, 0.3))])
-    monkeypatch.setattr(rr, "SCORE_FLOOR_FRACTION", 0.75)
+        for i, sc in enumerate((0.60, 0.55, 0.51, 0.49, 0.20))])
+    monkeypatch.setattr(rr, "SCORE_FLOOR_GAP", 0.10)
 
     out = rr.retrieve_docs_tool("q", type="how-to")
 
-    assert [d.score for d in out.docs] == [1.0, 0.9, 0.8]  # 0.7 and 0.3 are below 0.75
+    # 0.49 and 0.20 sit more than 0.10 below the best score of 0.60.
+    assert [d.score for d in out.docs] == [0.60, 0.55, 0.51]
 
 
 def test_the_floor_is_relative_so_a_hard_query_still_gets_an_answer(monkeypatch):
-    # An absolute threshold would answer a hard query with nothing and an easy
-    # one with everything. "Good" only means anything next to what else exists.
+    # A fixed threshold would answer a hard query with nothing and an easy one
+    # with everything: the gap is measured DOWN from whatever this query found,
+    # so a query whose best is 0.31 still gets an answer.
     monkeypatch.setattr(rr, "_search_branch", lambda v, s, e=None: [
         _hit("how-to", id=f"A{i}::s", score=sc, text="x" * 10)
         for i, sc in enumerate((0.31, 0.30, 0.10))])
-    monkeypatch.setattr(rr, "SCORE_FLOOR_FRACTION", 0.75)
+    monkeypatch.setattr(rr, "SCORE_FLOOR_GAP", 0.10)
 
     out = rr.retrieve_docs_tool("q", type="how-to")
     assert [d.score for d in out.docs] == [0.31, 0.30]
@@ -522,10 +524,10 @@ def test_the_floor_is_relative_so_a_hard_query_still_gets_an_answer(monkeypatch)
 
 def test_a_branch_whose_best_is_noise_is_dropped_whole(monkeypatch):
     def fake(v, source_type, e=None):
-        sc = 1.0 if source_type == "language" else 0.2
+        sc = 0.60 if source_type == "language" else 0.20
         return [_hit(source_type, id=f"{source_type}::s", score=sc, text="x" * 10)]
     monkeypatch.setattr(rr, "_search_branch", fake)
-    monkeypatch.setattr(rr, "SCORE_FLOOR_FRACTION", 0.75)
+    monkeypatch.setattr(rr, "SCORE_FLOOR_GAP", 0.10)
 
     out = rr.retrieve_docs_tool("q")
     assert [d.source for d in out.docs] == ["documentation-language"]
@@ -536,8 +538,8 @@ def test_one_query_never_deletes_another_query_s_only_answer(monkeypatch):
     # let a strong match for one silently erase the other's answer.
     monkeypatch.setattr(rr, "_embed_queries", lambda qs: list(qs))
     monkeypatch.setattr(rr, "_search_branch", lambda v, s, e=None: [
-        _hit(s, id=f"{v}-{s}::0", score=(0.95 if v == "easy" else 0.40), text="x" * 10)])
-    monkeypatch.setattr(rr, "SCORE_FLOOR_FRACTION", 0.75)
+        _hit(s, id=f"{v}-{s}::0", score=(0.60 if v == "easy" else 0.40), text="x" * 10)])
+    monkeypatch.setattr(rr, "SCORE_FLOOR_GAP", 0.10)
 
     out = rr.retrieve_docs_tool(["easy", "hard"], type="how-to")
     assert {d.query for d in out.docs} == {"easy", "hard"}
