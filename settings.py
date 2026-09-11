@@ -3,7 +3,6 @@ import os
 
 # === Environment variables ===
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-RAG_VECTOR_STORE_ID = os.environ.get("RAG_VECTOR_STORE_ID", "")
 
 # The model every chunk AND every query is embedded with when the local index
 # serves retrieval. Both sides must use the same one — a snapshot built by
@@ -24,16 +23,7 @@ SOURCETYPE = "sourceType"
 # fill/ingest.py:_section_attributes).
 SLUG = "slug"
 
-# Attribute key under which the article's heading path is stored on each VS
-# file ("Rules: navigator > Navigator rules"; see fill/ingest.py:_section_attributes).
-# It is what a query is matched against for the title rerank.
-HEADING_PATH = "heading_path"
 
-# Attribute key under which the stable chunk id is stored on each VS file
-# ("{slug}::{kebab-section}", written for every uploaded section by
-# fill/ingest.py:_section_attributes). It is the id returned in `DocItem.id`
-# and the one `retrieve_docs(exclude_ids=...)` filters on.
-SECTION_ID = "section_id"
 
 # Bare category values (the docs/<lang> folder names) exposed by the chunker on
 # VS file attributes.
@@ -46,47 +36,95 @@ SOURCETYPE_DOCUMENTATION_RULES = "rules"
 
 # Combined identifiers returned in `DocItem.source` for backward
 # compatibility with consumers that key on the legacy spelling.
-SOURCETYPE_DOC_PARADIGM = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_PARADIGM}"
-SOURCETYPE_DOC_LANGUAGE = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_LANGUAGE}"
-SOURCETYPE_DOC_HOWTO = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_HOWTO}"
-SOURCETYPE_DOC_BRIEF = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_BRIEF}"
-SOURCETYPE_DOC_RULES = f"{SOURCETYPE_DOCUMENTATION}-{SOURCETYPE_DOCUMENTATION_RULES}"
 
-# Per-sourceType chunk budget. One entry costs one search, so this is also the
-# per-branch slice of a merged result.
+
+# Relevance floor, as a fraction of the best score in the response.
 #
-# There used to be a second, larger table for the case where `type` was passed
-# explicitly, because `brief` and `rules` were split into per-area articles and
-# a typed lookup was meant to bring a whole article back. Those two branches are
-# no longer searched — an article is named and delivered whole by get_guidance —
-# and for the three that remain the two tables held the same numbers, so the
-# distinction went with them.
-TOP_K = {
-    SOURCETYPE_DOC_PARADIGM: 3,
-    SOURCETYPE_DOC_LANGUAGE: 3,
-    SOURCETYPE_DOC_HOWTO: 3,
-}
+# What the old per-branch chunk count was really doing, in the unit it was
+# really doing it in. Removing the count uncovered this: with only a size
+# budget left, a search fills 36,000 characters every time, and the tail it
+# fills them with is noise — measured on the corpus, two RANDOM chunks score
+# 0.264 median and 0.552 at p99, and the chunks the budget was reaching for sat
+# at 0.501.
+#
+# The number is not invented. Across 200 probe queries, 0.75 x the best score
+# keeps a median of 9 chunks — which is what the old 3-per-branch quota
+# returned — while ADAPTING where the quota could not: 27 at p90, when a query
+# genuinely has that many good answers, and 1 when it has one.
+SCORE_FLOOR_FRACTION = float(os.environ.get("SCORE_FLOOR_FRACTION", "0.75"))
 
-# Ceiling on the chunks ONE call returns when it carries several queries.
-# A batch must not be a way to buy context: four separate calls return 60
-# chunks (~70 KB), and the whole reason a per-branch quota exists is the
-# caller's context, not its patience. Under this cap a four-query batch costs
-# ~28 KB — less than the calls it replaces. A single query is unaffected: its
-# own quota (9 untyped, 3 typed) is already below the cap.
-BATCH_TOTAL_CAP = int(os.environ.get("BATCH_TOTAL_CAP", "24"))
+# Ceiling on the total TEXT one call returns, in characters.
+#
+# The only limit that bounds what a caller actually spends. A chunk count never
+# did: chunk length spans 15x — median 718 characters, p99 ~7k, max ~11k — so
+# the same 24 chunks are ~27 KB of average text and ~183 KB of the largest.
+# Responses of 70 KB were reaching callers, whose clients paged them out to a
+# file to be parsed by hand.
+#
+# What this bounds is the TRANSPORT, not the token cost, and it is the honest
+# unit for that: 35,297 characters of text serialise to 40,293 of JSON (1.142x),
+# which clears the 50,000-character threshold above which clients stop handling
+# a result inline. Against a token cap it is merely conservative — measured
+# density runs from 2.75 to 20.59 characters per token across real articles, so
+# this is at most ~13,000 tokens and usually far less. Counting real tokens
+# would mean guessing at a client-side tokenizer we do not know.
+#
+# It is split evenly across the (query x branch) cells of a call and unused
+# share flows to the others, so no branch and no query in a batch can crowd out
+# the rest.
+RESULT_MAX_CHARS = int(os.environ.get("RESULT_MAX_CHARS", "36000"))
 
-# Most queries a batch may carry. Beyond this the split leaves each query too
-# little to be worth asking, so the call is refused rather than quietly
-# truncated. Measured on real traffic: bursts of unrelated needs are 2-4 deep,
-# and 8 covers all but a handful.
-# Measured depth is 2-4 (452 bursts of two topics, 200 of three, 105 of four),
-# and four is what has actually been verified end to end. Raise it only once
-# per-query completeness has been measured at five and beyond.
-BATCH_MAX_QUERIES = max(1, min(
-    int(os.environ.get("BATCH_MAX_QUERIES", "4")),
-    # More queries than the cap would give each less than one chunk, and the
-    # max(1, ...) floor would then quietly break the cap instead.
-    BATCH_TOTAL_CAP))
+# Most articles one call may read, by the same rule as the query cap: the point
+# where giving every article a foothold and staying inside the budget stop being
+# jointly keepable.
+#
+# Measured, 300 trials per size — even share per article, each taking a
+# contiguous prefix, every article guaranteed its first remaining chunk:
+#     2 articles   0% over budget    2.0 of  2 complete
+#     4 articles   0% over budget    3.8 of  4
+#     8 articles   0% over budget    7.1 of  8
+#    12 articles   0% over budget    8.7 of 12
+#    16 articles   2% over budget    9.3 of 16
+#    24 articles  11% over budget    9.1 of 24
+#    32 articles  30% over budget    8.4 of 32
+#
+# 12 is the last size that never overflowed. It is an admission limit and a
+# proxy, not a proof: the real condition is whether the sum of each article's
+# next mandatory chunk fits, which depends on WHICH articles and which page, and
+# is checked when the response is built. The cap keeps the common case from
+# reaching that check at all. Past 12 the completed count also stops rising —
+# more articles asked for, fewer finished — but that is a usefulness argument,
+# and only the broken promise justifies refusing.
+ARTICLE_MAX_NAMES = max(1, int(os.environ.get("ARTICLE_MAX_NAMES", "12")))
+
+# Most queries a batch may carry — the point where this server's two promises
+# stop being jointly keepable, not a view about how many questions an agent
+# ought to have.
+#
+# The promises: every query in a batch gets at least its best chunk (a query
+# answered with nothing is indistinguishable from a query nothing matched), and
+# the response fits `RESULT_MAX_CHARS` (a response the client pages out to a
+# file is a response nobody reads). Both hold easily while a cell's share is
+# bigger than a chunk. Past that they start to fight: keeping every query
+# answered means exceeding the budget, and holding the budget means starving
+# the tail of the batch.
+#
+# Measured, 60 batches at each size, with the starvation guarantee in place:
+#     8 queries  median 17,158  max 35,280  over budget  0/60
+#    16 queries  median 34,839  max 35,964  over budget  0/60
+#    20 queries  median 35,791  max 40,456  over budget  3/60
+#    24 queries  median 35,879  max 46,276  over budget  9/60
+#    28 queries  median 35,959  max 59,005  over budget 16/60
+#
+# So 16. It is the last size at which both promises held in every trial, and it
+# is derived rather than chosen — the earlier 4 and 8 were traffic observations
+# and the arithmetic of a budget that no longer exists.
+#
+# Refusing past it is not distrust of the caller. A batch is context-neutral —
+# measured, it costs exactly what the separate calls it replaces cost — so the
+# caller loses nothing by splitting, and gains an answer to every query instead
+# of silence for some of them.
+BATCH_MAX_QUERIES = max(1, int(os.environ.get("BATCH_MAX_QUERIES", "16")))
 
 # === Local dense index (fill/snapshot.py, tools/local_index.py) ===
 # Where the server looks for the snapshot. Empty (or a missing file) => the
@@ -97,9 +135,6 @@ SNAPSHOT_PATH = os.environ.get("RAG_SNAPSHOT_PATH", "/data/snapshot/corpus.npz")
 # Which backend serves retrieve_docs: "store" (OpenAI Vector Store, the way it
 # has always worked) or "local" (the snapshot). Canary switch — the code ships
 # first and defaults to the old path; flipping this env var is the rollout, and
-# flipping it back is the rollback. "local" still falls back to the store when
-# the snapshot is missing or the embedding call fails.
-RETRIEVAL_BACKEND = os.environ.get("RETRIEVAL_BACKEND", "store")
 
 # How old a snapshot may get before every load says so. A stale index does not
 # fail — it answers from documentation that has moved on — so age is WARNED

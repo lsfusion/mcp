@@ -196,22 +196,39 @@ def test_plugin_kotlin_wrapper_forwards_the_exclusion_list():
 # declare is one a strict client cannot pass. A proxy that misses them silently
 # offers only the zero-argument call, and the per-area articles — the whole
 # point of the redesign — stay unreachable through it.
-GUIDANCE_PARAMS = set(BRANCH_PREFIX)
+# Read from the tool's OWN signature rather than restated here. The earlier
+# version derived this from `BRANCH_PREFIX`, which made it a guard over the two
+# guidance branches specifically — so when `get_guidance` grew a third
+# parameter the guard had nothing to say about it, and a proxy could ship
+# without it exactly as the proxies once shipped without `rules` and `brief`.
+# Three separate field reports came from that hole: the article instructed a
+# call the installed tool could not accept. Deriving the set means the next
+# parameter is covered on the day it is added.
+def _guidance_params() -> set[str]:
+    import server  # imported lazily: the module builds the MCP app at import
+    fn = getattr(server.lsfusion_get_guidance, "fn", server.lsfusion_get_guidance)
+    return set(inspect.signature(fn).parameters)
 
 
-def test_central_guidance_contract_is_the_two_branches():
-    # Same vacuity guard as above: if the branches vanish, the checks below pass
-    # for the wrong reason.
-    assert GUIDANCE_PARAMS == {"rules", "brief"}
+GUIDANCE_PARAMS = _guidance_params()
 
 
-def test_platform_guidance_descriptor_declares_both_branches():
+def test_central_guidance_contract_covers_every_named_read():
+    # Vacuity guard: if the parameters vanish, the checks below pass for the
+    # wrong reason. Reference articles are NOT among them — naming one is
+    # `retrieve_docs(article=...)`, because a reference article is not sized to
+    # arrive whole and is delivered as its chunks, paged.
+    assert GUIDANCE_PARAMS
+    assert set(BRANCH_PREFIX) <= GUIDANCE_PARAMS
+
+
+def test_platform_guidance_descriptor_declares_every_parameter():
     text = _need(PLATFORM)
     region = _brace_slice(text, "JSONObject getGuidanceDescriptor(")
     _assert_declares(region, GUIDANCE_PARAMS, "platform MCPDispatcher (get_guidance)")
 
 
-def test_plugin_java_guidance_descriptor_declares_both_branches():
+def test_plugin_java_guidance_descriptor_declares_every_parameter():
     text = _need(PLUGIN_JAVA)
     region = _brace_slice(text, "JSONObject buildGetGuidanceToolDescriptor(")
     _assert_declares(region, GUIDANCE_PARAMS, "plugin McpBaseService (get_guidance)")

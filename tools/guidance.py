@@ -47,6 +47,15 @@ AREA_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 # Names that mean "the branch's own top article" rather than one of its areas.
 TOP_ALIASES = frozenset({"top", "rules", "brief", "index", "map"})
 
+
+# `retrieve_docs` hands back chunk ids shaped `<slug>::<section>`, so a caller
+# holding a chunk already holds the name of the article it came from. Reading
+# that article is `retrieve_docs(article=...)`, which accepts the id verbatim;
+# the separator lives here because this is where the guidance branches define
+# their own naming, and both readers have to agree on it.
+DOC_ID_SEP = "::"
+
+
 # The MCP `instructions` field, returned at the `initialize` handshake.
 #
 # It carries only a POINTER, never the guidance itself. Clients truncate this
@@ -226,6 +235,8 @@ NOT_FOUND_NOTICE = (
 )
 
 
+
+
 def _log_guidance(branch: str, area: str | None, outcome: str, start: float, *,
                   chars: int | None = None, rev: str | None = None,
                   error: BaseException | None = None) -> None:
@@ -294,8 +305,51 @@ def article_url(branch: str, name: str) -> str:
     return f"{GUIDANCE_BASE_URL}{article_slug(branch, name)}.md"
 
 
+
 def _not_found(branch: str, name: str, detail: str = "") -> str:
     return NOT_FOUND_NOTICE.format(branch=branch, name=name, detail=detail)
+
+
+
+
+class _NotThisArticle(Exception):
+    """The site answered, but not with the article that was asked for.
+
+    Separated from every other failure on purpose: this one is an ANSWER the
+    assistant can act on in the same turn, so it comes back as text. A timeout
+    or a 5xx is not an answer and must never be dressed up as one.
+    """
+
+    def __init__(self, detail: str = ""):
+        super().__init__(detail)
+        self.detail = detail
+
+
+def _fetch_article(url: str, timeout: float) -> str:
+    """The raw markdown at `url`, or raise.
+
+    Sanitizing a name secures the URL we ASK for, not the page we get back.
+    `urlopen` follows redirects silently, so a moved or misconfigured slug could
+    hand back a DIFFERENT article — another branch's, even — and it would be
+    framed as the requested one, complete. And a soft 404 answers 200 with an
+    HTML error page. Neither is the article asked for, and passing either off as
+    one is worse than any failure, so both become `_NotThisArticle`.
+    """
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (https only, fixed host)
+            body = resp.read().decode("utf-8")
+            landed = resp.geturl()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            # The site answers an unknown slug with a full HTML 404 page, so the
+            # status is the only reliable signal here — never the body.
+            raise _NotThisArticle() from exc
+        raise
+    if landed != url:
+        raise _NotThisArticle(f" (the request for {url} was redirected to {landed})")
+    if body.lstrip()[:1] == "<":
+        raise _NotThisArticle(" (the site answered with a page, not the article)")
+    return body
 
 
 def read_article(branch: str, name: str, timeout: float | None = None) -> str:
@@ -318,36 +372,18 @@ def read_article(branch: str, name: str, timeout: float | None = None) -> str:
         _log_guidance(branch, label, "not_found", start)
         return _not_found(branch, name)
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (https only, fixed host)
-            body = resp.read().decode("utf-8")
-            landed = resp.geturl()
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            # The site answers an unknown slug with a full HTML 404 page, so the
-            # status is the only reliable signal here — never the body.
-            _log_guidance(branch, label, "not_found", start)
-            return _not_found(branch, name)
-        _log_guidance(branch, label, "error", start, error=exc)
-        raise
+        body = _fetch_article(url, timeout)
+    except _NotThisArticle as exc:
+        _log_guidance(branch, label, "not_found", start)
+        return _not_found(branch, name, exc.detail)
     except Exception as exc:  # noqa: BLE001 — log, then let it propagate unchanged
         _log_guidance(branch, label, "error", start, error=exc)
         raise
-    # Sanitizing the name secures the URL we ASK for, not the page we get back.
-    # urlopen follows redirects silently, so a moved or misconfigured slug could
-    # hand back a different article — the other branch's, even — and it would be
-    # framed as this one, complete. And a soft 404 answers 200 with an HTML error
-    # page. Neither is a rules article, and passing either off as one is worse
-    # than any failure, so both become the not-found answer.
-    if landed != url:
-        _log_guidance(branch, label, "not_found", start)
-        return _not_found(branch, name, f" (the request for {url} was redirected to {landed})")
-    if body.lstrip()[:1] == "<":
-        _log_guidance(branch, label, "not_found", start)
-        return _not_found(branch, name, " (the site answered with a page, not the article)")
     _log_guidance(branch, label, "ok", start, chars=len(body), rev=guidance_version(body))
     return "\n".join((ARTICLE_NOTICE.format(branch=branch, name=label,
                                           strength=STRENGTH_CLAUSE if branch == "rules" else ""), "",
                        fenced(branch, label, body)))
+
 
 
 def fenced(branch: str, label: str, body: str) -> str:

@@ -29,7 +29,7 @@ from openai import OpenAI
 from fill import snapshot as snap
 from fill.chunker import CHUNKER_VERSION, GLOSSARY_VERSION, PREFIX_VERSION, chunk_md
 from settings import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL
-from tools.rag_ingest_docs import DOCS_SUBDIR, _all_docs, _make_lookups
+from fill.docs_tree import DOCS_SUBDIR, all_docs, make_lookups
 
 log = logging.getLogger("rag_build_snapshot")
 
@@ -58,10 +58,10 @@ def build(platform_root: Path, out: Path, client: OpenAI,
     docs_root = platform_root / DOCS_SUBDIR
     if not docs_root.is_dir():
         raise FileNotFoundError(f"docs root not found: {docs_root}")
-    source_type_for, slug_for, _source_file_for, _path_for_key = _make_lookups(docs_root)
+    source_type_for, slug_for, _source_file_for, _path_for_key = make_lookups(docs_root)
 
     rows: list[dict] = []
-    for path in _all_docs(docs_root):
+    for path in all_docs(docs_root):
         source_type = source_type_for(path)
         slug = slug_for(path)
         for sec in chunk_md(path, source_type, slug):

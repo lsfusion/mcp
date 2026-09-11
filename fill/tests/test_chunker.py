@@ -827,3 +827,32 @@ def test_merging_tolerates_parts_without_keywords():
 
     assert _build_merged_section([part("a", ""), part("b", "")], "Doc").keywords == ""
     assert _build_merged_section([part("a", ""), part("b", "kw")], "Doc").keywords == "kw"
+
+
+# --- the documentation tree, as the snapshot builder walks it -----------------
+#
+# These rules moved out of the ingest driver so the snapshot builder would stop
+# importing from a module being deleted around it. That is the way this
+# deletion goes wrong: request-time tests stay green against a snapshot that
+# already exists, and the next REBUILD is what fails.
+
+def test_the_builder_walks_the_tree_without_the_ingest_driver(tmp_path):
+    import fill.docs_tree as dt
+
+    for rel in ("language/en/A.md", "paradigm/en/B.md", "how-to/en/C.md",
+                "rules/en/Rules_logic.md", "language/ru/A.md", "images/x.md",
+                "language/AGENTS.md"):
+        f = tmp_path / rel
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x", encoding="utf-8")
+
+    found = [p.relative_to(tmp_path).as_posix() for p in dt.all_docs(tmp_path)]
+    # The English slice of the INDEXED branches only: no ru, no images, no
+    # AGENTS.md, and not the guidance branches — they are not searched.
+    assert found == ["how-to/en/C.md", "language/en/A.md", "paradigm/en/B.md"]
+
+    source_type_for, slug_for, _sf, _pk = dt.make_lookups(tmp_path)
+    assert source_type_for(tmp_path / "language/en/A.md") == "language"
+    assert slug_for(tmp_path / "language/en/A.md") == "A"
+    with pytest.raises(ValueError):
+        source_type_for(tmp_path / "language/ru/A.md")
