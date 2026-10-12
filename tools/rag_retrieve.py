@@ -758,6 +758,9 @@ def _status(slugs: list[str], totals: dict[str, tuple[int, int]], hits: List[_Hi
             f"again without the old exclusions.")
 
 
+_ANCHOR = re.compile(r"\s*\{#[^}]*\}")
+
+
 def _section_names(headings: list[str], last_held: str | None) -> list[str]:
     """The missing sections of one walk, in reading order, by name.
 
@@ -767,7 +770,9 @@ def _section_names(headings: list[str], last_held: str | None) -> list[str]:
     would read as a section the caller does not have at all.
     """
     def label(h: str) -> str:
-        _title, sep, inner = h.partition(" > ")
+        # Headings keep their Markdown anchors (`Containers {#containers}`):
+        # link targets, not names, and noise to a reader.
+        _title, sep, inner = _ANCHOR.sub("", h).partition(" > ")
         return inner if sep else "(opening)"
 
     names: list[str] = []

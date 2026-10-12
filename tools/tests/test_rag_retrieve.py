@@ -656,11 +656,12 @@ def test_a_partial_walk_names_the_sections_still_missing(monkeypatch):
     # the table they needed was in the part they did not have.
     monkeypatch.setattr(rr, "RESULT_MAX_CHARS", 300)
     _articles(monkeypatch, {"D": [("", 100), ("Syntax", 100), ("Props", 100),
-                                  ("Props", 100), ("Containers", 100), ("Examples", 100)]})
+                                  ("Props", 100), ("Params > Containers {#containerprops}", 100),
+                                  ("Examples", 100)]})
 
     out = rr.retrieve_docs_tool(article="D")
 
-    assert "`D`: Props (rest), Containers, Examples." in out.status
+    assert "`D`: Props (rest), Params > Containers, Examples." in out.status
     assert "Judge by these names" in out.status
 
 
