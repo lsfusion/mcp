@@ -23,6 +23,7 @@ from settings import (
     SCORE_FLOOR_GAP,
     EMBEDDING_MODEL,
     ARTICLE_MAX_NAMES,
+    SECTIONS_MAX_CHARS,
     BATCH_MAX_QUERIES,
     QUERY_LOG_MAX_CHARS,
     ERROR_LOG_MAX_CHARS,
@@ -84,6 +85,9 @@ class _Hit:
     # pages of a traversal are contiguous runs, so list order is reading
     # order, and the status names the positions in words.
     ordinal: int | None = None
+    # The chunk's heading path (`Article > Section > Subsection`). Internal too:
+    # it is how `_status` names the sections of a walk that did not come back.
+    heading: str | None = None
 
 
 
@@ -119,6 +123,7 @@ def _hit_from_row(row: dict, query: str | None) -> _Hit:
         score=row["score"],
         query=query,
         ordinal=row.get("ordinal"),
+        heading=row.get("heading_path"),
     )
 
 
@@ -275,6 +280,10 @@ def retrieve_docs_tool(
     # after `exclude_ids`). The first is the denominator, the second is what
     # says whether anything is left to fetch.
     article_totals: dict[str, tuple[int, int]] = {}
+    # slug -> headings of the chunks a walk did not return, in reading order,
+    # and the heading of the last chunk it did (to mark a section cut in two).
+    article_missing: dict[str, list[str]] = {}
+    article_last_held: dict[str, str | None] = {}
     try:
         if any(not isinstance(q, str) or not q.strip() for q in queries):
             raise ValueError("query must be a non-empty string, or a list of them")
@@ -468,32 +477,40 @@ def retrieve_docs_tool(
             # left with nothing. Reserved before anything else, so a big article
             # earlier in the list cannot eat the foothold of a small one later.
             #
-            # Then work-conserving redistribution: keep going round, in request
-            # order, taking each article's next chunk while it fits, until a
-            # full pass adds nothing. A single second pass would strand budget
-            # that a later article released.
+            # Then the articles are filled ONE AT A TIME, in request order, each
+            # as far as it fits. Taking a chunk from each in turn would cut every
+            # article short at once: two articles that together miss the budget
+            # by a little came back as two halves, and a reader holding half of
+            # each holds neither. Filled in turn, at most the article where the
+            # budget runs out is partial. An article stops at its first chunk
+            # that does not fit (the prefix rule above), and the next one gets
+            # the rest — a smaller chunk of it may still fit.
             for cell in cells:
                 if cell and used + len(cell[0].text) <= RESULT_MAX_CHARS:
                     hits.append(cell[0])
                     picked.add(cell[0].id)
                     used += len(cell[0].text)
-            taken = {id(cell): (1 if cell and cell[0].id in picked else 0) for cell in cells}
-            while True:
-                progress = False
-                for cell in cells:
-                    k = taken[id(cell)]
-                    if k >= len(cell):
-                        continue
-                    nxt = cell[k]
+            for cell in cells:
+                if not cell or cell[0].id not in picked:
+                    continue
+                for nxt in cell[1:]:
                     if used + len(nxt.text) > RESULT_MAX_CHARS:
-                        continue
+                        break
                     hits.append(nxt)
                     picked.add(nxt.id)
                     used += len(nxt.text)
-                    taken[id(cell)] = k + 1
-                    progress = True
-                if not progress:
-                    break
+            # Footholds went out first; reading order is article by article.
+            place = {h.id: (ci, k) for ci, cell in enumerate(cells)
+                     for k, h in enumerate(cell)}
+            hits.sort(key=lambda h: place[h.id])
+            # What each walk still lacks, by section, so the status can say what
+            # is missing rather than only how much — a count gives a reader no
+            # way to judge whether the rest matters to the task in hand.
+            for slug, cell in zip(article_slugs, cells):
+                article_missing[slug] = [h.heading or "" for h in cell
+                                         if h.id not in picked]
+                held = [h.heading or "" for h in cell if h.id in picked]
+                article_last_held[slug] = held[-1] if held else None
         else:
             for cell in cells:
                 spent = 0
@@ -556,7 +573,8 @@ def retrieve_docs_tool(
               for h in hits],
         status=_status(article_slugs, article_totals, hits, n_omitted,
                        n_candidates, revision, searched=bool(queries),
-                       unresolved=unresolved_names),
+                       unresolved=unresolved_names, missing=article_missing,
+                       last_held=article_last_held),
         omitted=n_omitted,
     )
 
@@ -592,7 +610,9 @@ _READ_WHOLE = (" If one of them is on the right subject but plainly partial, rea
 
 def _status(slugs: list[str], totals: dict[str, tuple[int, int]], hits: List[_Hit],
             omitted: int, candidates: int, revision: str | None, searched: bool,
-            unresolved: list[str] | None = None) -> str:
+            unresolved: list[str] | None = None,
+            missing: dict[str, list[str]] | None = None,
+            last_held: dict[str, str | None] | None = None) -> str:
     """Is this response the whole answer, and if not, what call continues it.
 
     One field for every mode and always a sentence, because the decision it
@@ -697,10 +717,67 @@ def _status(slugs: list[str], totals: dict[str, tuple[int, int]], hits: List[_Hi
     head = (f"ARTICLE_PARTIAL: {_join(count(sl, True) for sl in done) + ' complete; ' if done else ''}"
             f"{_join(count(sl, False) + f' ({left[sl]} still to fetch)' for sl in unfinished)}, "
             f"{at}.{more}{note}")
+    # Readers who knew an article was partial still stopped at the first page:
+    # "8 still to fetch" gave them no way to see that the table they needed
+    # was among the eight. Naming the sections lets them decide on substance.
+    #
+    # The list has a budget of its own (a soft one: the `slug:` prefixes and a
+    # trailing ellipsis ride on top), across ALL articles: the text budget
+    # does not cover the status, and twelve partial articles with long headings
+    # would otherwise push the response past what a client keeps inline. Cut
+    # short, it says so — a section left off the list is unknown, not unneeded.
+    lacking, shown, cut = [], 0, False
+    for sl in unfinished:
+        names = _section_names((missing or {}).get(sl, []), (last_held or {}).get(sl))
+        if not names:
+            continue
+        kept = []
+        for n in names:
+            if shown + len(n) > SECTIONS_MAX_CHARS:
+                cut = True
+                break
+            kept.append(n)
+            shown += len(n) + 2
+        if kept:
+            lacking.append(f"`{sl}`: {', '.join(kept)}" + (", …" if len(kept) < len(names) else ""))
+        else:
+            cut = True
+        if cut:
+            break
+    if lacking:
+        head += f" Not in this response yet — {'; '.join(lacking)}."
+        head += (" The list is cut short: what it leaves out is unknown, not "
+                 "unneeded, so do not judge the rest by it." if cut else
+                 " Judge by these names whether your task needs them.")
+    elif cut:
+        head += (" The sections still missing are not named here; what is not "
+                 "here yet is unknown, not unneeded.")
     return (f"{head} To continue, repeat with `article={unfinished!r}` and the ids "
             f"above added to `exclude_ids`, keeping every id you have already "
             f"excluded; a revision that changes under you means the walk starts "
             f"again without the old exclusions.")
+
+
+def _section_names(headings: list[str], last_held: str | None) -> list[str]:
+    """The missing sections of one walk, in reading order, by name.
+
+    A heading path starts with the article's own title, which the slug already
+    says, so it is dropped. A section split into several chunks is named once;
+    one whose first part did come back is marked `(rest)`, since its name alone
+    would read as a section the caller does not have at all.
+    """
+    def label(h: str) -> str:
+        _title, sep, inner = h.partition(" > ")
+        return inner if sep else "(opening)"
+
+    names: list[str] = []
+    prev = None
+    for h in headings:
+        if h == prev:
+            continue
+        names.append(label(h) + (" (rest)" if not names and h == last_held else ""))
+        prev = h
+    return names
 
 
 def _left_of(slug: str, hits: List[_Hit], totals: dict[str, tuple[int, int]]) -> int:

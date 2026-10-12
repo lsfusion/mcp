@@ -112,6 +112,11 @@ RESULT_MAX_CHARS = int(os.environ.get("RESULT_MAX_CHARS", "36000"))
 # more articles asked for, fewer finished — but that is a usefulness argument,
 # and only the broken promise justifies refusing.
 ARTICLE_MAX_NAMES = max(1, int(os.environ.get("ARTICLE_MAX_NAMES", "12")))
+# Characters the ARTICLE_PARTIAL status may spend naming the sections a walk
+# did not return, across all its articles. The text budget above does not cover
+# the status, so this is what keeps the list from pushing a full response past
+# the client's inline limit (~50 000 characters for Claude Code).
+SECTIONS_MAX_CHARS = max(0, int(os.environ.get("SECTIONS_MAX_CHARS", "1500")))
 
 # Most queries a batch may carry — the point where this server's two promises
 # stop being jointly keepable, not a view about how many questions an agent

@@ -610,3 +610,87 @@ def test_the_score_does_not_present_itself_as_confidence(monkeypatch):
     assert "no absolute scale" in d
     assert "does not establish" in d
     assert "decided by reading it" in d
+
+
+def _articles(monkeypatch, spec: dict[str, list[tuple[str, int]]]):
+    """Articles by slug, each a list of (heading after the title, text length)."""
+    monkeypatch.setattr(rr.local_index, "known_article", lambda s: s in spec)
+    monkeypatch.setattr(rr.local_index, "article_branch", lambda s: "language")
+    monkeypatch.setattr(rr.local_index, "revision", lambda: "rev")
+
+    def chunks(slug, v, excl):
+        rows = [{"section_id": f"{slug}::{i}", "sourceType": "language", "slug": slug,
+                 "heading_path": f"{slug} > {h}" if h else slug, "keywords": "",
+                 "text": "x" * n, "score": None, "ordinal": i}
+                for i, (h, n) in enumerate(spec[slug])]
+        return [r for r in rows if r["section_id"] not in (excl or ())], len(rows)
+    monkeypatch.setattr(rr.local_index, "article_chunks", chunks)
+
+
+def test_a_walk_of_two_articles_finishes_the_first_before_starting_the_second(monkeypatch):
+    # The reported case: Form_design + DESIGN_statement together just over the
+    # budget came back as 7 of 11 and 6 of 14 — two halves, neither usable.
+    monkeypatch.setattr(rr, "RESULT_MAX_CHARS", 1000)
+    _articles(monkeypatch, {"A": [("", 100)] + [("a", 100)] * 4,
+                            "B": [("", 100)] + [("b", 100)] * 8})
+
+    out = rr.retrieve_docs_tool(article=["A", "B"])
+
+    ids = [d.id for d in out.docs]
+    assert ids == ["A::0", "A::1", "A::2", "A::3", "A::4",
+                   "B::0", "B::1", "B::2", "B::3", "B::4"]
+    assert out.status.startswith("ARTICLE_PARTIAL: `A` all 5 chunks complete; `B` 5 of 9")
+
+
+def test_a_later_article_keeps_its_foothold(monkeypatch):
+    monkeypatch.setattr(rr, "RESULT_MAX_CHARS", 500)
+    _articles(monkeypatch, {"A": [("", 100)] * 10, "B": [("", 100)] * 3})
+
+    out = rr.retrieve_docs_tool(article=["A", "B"])
+
+    assert [d.id for d in out.docs] == ["A::0", "A::1", "A::2", "A::3", "B::0"]
+
+
+def test_a_partial_walk_names_the_sections_still_missing(monkeypatch):
+    # Agents that read ARTICLE_PARTIAL still stopped: a count did not tell them
+    # the table they needed was in the part they did not have.
+    monkeypatch.setattr(rr, "RESULT_MAX_CHARS", 300)
+    _articles(monkeypatch, {"D": [("", 100), ("Syntax", 100), ("Props", 100),
+                                  ("Props", 100), ("Containers", 100), ("Examples", 100)]})
+
+    out = rr.retrieve_docs_tool(article="D")
+
+    assert "`D`: Props (rest), Containers, Examples." in out.status
+    assert "Judge by these names" in out.status
+
+
+def test_a_complete_walk_names_no_missing_sections(monkeypatch):
+    _articles(monkeypatch, {"D": [("", 10), ("Syntax", 10)]})
+    out = rr.retrieve_docs_tool(article="D")
+    assert out.status.startswith("ARTICLE_COMPLETE") and "Not in this response" not in out.status
+
+
+def test_the_section_list_has_one_budget_across_articles_and_says_when_cut(monkeypatch):
+    # Twelve partial articles with long headings would otherwise push a full
+    # response past the client's inline limit; and a list cut short must not
+    # invite judging the sections it left off.
+    monkeypatch.setattr(rr, "RESULT_MAX_CHARS", 1200)
+    monkeypatch.setattr(rr, "SECTIONS_MAX_CHARS", 300)
+    long = "S" * 60
+    _articles(monkeypatch, {f"A{i}": [("", 100)] + [(f"{long}{j}", 100) for j in range(6)]
+                            for i in range(12)})
+
+    out = rr.retrieve_docs_tool(article=[f"A{i}" for i in range(12)])
+
+    listed = out.status.split("Not in this response yet — ", 1)[1].split(". The list", 1)[0]
+    assert len(listed) <= 300 + 12 * 8   # names + the per-article `slug`: prefixes
+    assert "unknown, not unneeded" in out.status
+    assert "Judge by these names" not in out.status
+
+
+def test_a_section_list_with_no_room_still_says_it_is_missing(monkeypatch):
+    monkeypatch.setattr(rr, "RESULT_MAX_CHARS", 200)
+    monkeypatch.setattr(rr, "SECTIONS_MAX_CHARS", 0)
+    _articles(monkeypatch, {"D": [("", 100), ("Syntax", 100), ("Props", 100)]})
+    out = rr.retrieve_docs_tool(article="D")
+    assert "not named here" in out.status and "Judge by" not in out.status
