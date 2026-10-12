@@ -346,3 +346,97 @@ def test_plugin_kotlin_states_the_cap_in_prose():
     # number lives only in the description there — check it is the right one.
     region = _brace_slice(_need(PLUGIN_KT), "suspend fun retrieveDocs(")
     assert f"At most {BATCH_MAX_QUERIES} DISTINCT" in region
+
+
+# The checks above compare NAMES, so a proxy can carry a tool description from
+# an older contract and stay green. That is what happened to `get_guidance`: the
+# central text kept advertising an `article` selector that had moved to
+# `retrieve_docs`, the proxies copied it, and agents passed `article` to a tool
+# that silently ignored it. Descriptions are part of the contract a model
+# reads, so the proxies mirror them verbatim.
+def _central_description(tool: str) -> str:
+    os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy")
+    import asyncio
+    import importlib
+    tools = asyncio.run(importlib.import_module("server").mcp.list_tools())
+    return {t.name: t for t in tools}[tool].description
+
+
+def _literal_starting(text: str, opening: str) -> str:
+    m = re.search(r'"(' + re.escape(opening) + r'(?:[^"\\]|\\.)*)"', text)
+    assert m, f"no string literal starting {opening!r}"
+    body = m.group(1)
+    # Only the two escapes the descriptions need. Anything else (`\n`, `\t`, a
+    # stray backslash) changes the text the JVM serves, so it must not be
+    # decoded away into a match.
+    stray = set(re.findall(r'\\(.)', body)) - {'"', '\\'}
+    assert not stray, f"unexpected escapes in the literal: {sorted(stray)}"
+    return re.sub(r'\\(.)', r'\1', body)
+
+
+def _tools() -> dict:
+    os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy")
+    import asyncio
+    import importlib
+    return {t.name: t for t in asyncio.run(importlib.import_module("server").mcp.list_tools())}
+
+
+# The Kotlin toolset cannot type a parameter as "string or list", so it splits
+# `query` into `query`/`queries` and `article` into `article`/`articles`. Its
+# retrieve_docs description names both forms; everything else is the central
+# text. Each central fragment is asserted present, so rewriting it centrally
+# fails here instead of leaving the Kotlin wording behind.
+_KOTLIN_RETRIEVE = [
+    ("`query` alone searches", "`query` (or `queries`) alone searches"),
+    ("`article` alone WALKS the named articles from the top in document order — omit `query` to traverse;",
+     "`article` (or `articles`) alone WALKS the named articles from the top in document order — omit both `query` and `queries` to traverse;"),
+    ("Keeping `query` while adding `article` gets you a ranked search",
+     "Keeping a query while adding an article gets you a ranked search"),
+]
+
+
+def _expected(tool: str, path) -> str:
+    text = _tools()[tool].description
+    if tool == "lsfusion_retrieve_docs" and path == PLUGIN_KT:
+        for central, kotlin in _KOTLIN_RETRIEVE:
+            assert central in text, f"central wording moved, revisit the Kotlin adaptation: {central!r}"
+            text = text.replace(central, kotlin)
+    return text
+
+
+_DESCRIBED = [("lsfusion_get_guidance", "Read ONE lsFusion"),
+              ("lsfusion_retrieve_docs", "Search official lsFusion documentation")]
+
+
+@pytest.mark.parametrize("path", [PLATFORM, PLUGIN_JAVA, PLUGIN_KT], ids=["platform", "plugin-java", "plugin-kotlin"])
+@pytest.mark.parametrize("tool,opening", _DESCRIBED, ids=[t for t, _ in _DESCRIBED])
+def test_proxy_mirrors_the_central_tool_description(path, tool, opening):
+    assert _literal_starting(_need(path), opening) == _expected(tool, path)
+
+
+def test_tool_descriptions_name_foreign_parameters_only_with_their_tool():
+    # A parameter of ANOTHER tool may be mentioned only in a sentence that also
+    # names that tool — otherwise a reader takes it for one of this tool's own,
+    # which is exactly how `article` got passed to get_guidance.
+    tools = _tools()
+    for name, tool in tools.items():
+        own = set(tool.inputSchema["properties"])
+        for sentence in re.split(r"(?<=\.)\s+", tool.description):
+            for p in set(re.findall(r"`([a-z_]+)`", sentence)) - own:
+                owners = [o for o, t in tools.items() if o != name and p in t.inputSchema["properties"]]
+                if owners:
+                    assert any(o in sentence for o in owners), \
+                        f"{name}: `{p}` belongs to {owners} but the sentence does not say so: {sentence!r}"
+
+
+
+def test_tool_descriptions_call_tools_only_with_their_own_parameters():
+    # The other shape the same mistake takes: an inline call such as
+    # `lsfusion_get_guidance(article='Actions')`.
+    tools = _tools()
+    for name, tool in tools.items():
+        for callee, args in re.findall(r"`?(lsfusion_[a-z_]+)\(([^)]*)\)", tool.description):
+            if callee in tools:
+                passed = set(re.findall(r"([a-z_]+)\s*=", args))
+                bad = passed - set(tools[callee].inputSchema["properties"])
+                assert not bad, f"{name}: calls {callee} with {sorted(bad)}, which it does not take"
