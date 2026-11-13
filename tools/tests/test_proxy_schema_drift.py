@@ -64,19 +64,49 @@ def _contract(model) -> tuple[set[str], set[str]]:
     return fields, enums
 
 
+def _skip_literal(text: str, i: int) -> int:
+    """Index past the string or char literal, or the comment, that starts at `i`;
+    `i` itself when none does. Kotlin raw strings included; a string template
+    with a string inside it is not."""
+    if text.startswith('"""', i):
+        return text.index('"""', i + 3) + 3
+    if text.startswith("//", i):
+        end = text.find("\n", i)
+        return len(text) if end < 0 else end
+    if text.startswith("/*", i):
+        return text.index("*/", i + 2) + 2
+    if text[i] in "\"'":
+        j = i + 1
+        while text[j] != text[i]:
+            j += 2 if text[j] == "\\" else 1
+        return j + 1
+    return i
+
+
+def _closing(text: str, i: int, opening: str, closing: str) -> int | None:
+    """Index of the `closing` bracket that matches an `opening` one just before
+    `i`, past literals and comments; None when it never closes."""
+    depth = 1
+    while i < len(text):
+        j = _skip_literal(text, i)
+        if j != i:
+            i = j
+            continue
+        if text[i] == opening:
+            depth += 1
+        elif text[i] == closing:
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+
 def _brace_slice(text: str, marker: str) -> str:
     """Body from `marker` to its brace-matched close (a method)."""
     start = text.index(marker)
-    depth = 0
-    i = text.index("{", start)
-    for j in range(i, len(text)):
-        if text[j] == "{":
-            depth += 1
-        elif text[j] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start:j + 1]
-    return text[start:]
+    end = _closing(text, text.index("{", start) + 1, "{", "}")
+    return text[start:] if end is None else text[start:end + 1]
 
 
 def _tokens(region: str) -> set[str]:
@@ -440,3 +470,134 @@ def test_tool_descriptions_call_tools_only_with_their_own_parameters():
                 passed = set(re.findall(r"([a-z_]+)\s*=", args))
                 bad = passed - set(tools[callee].inputSchema["properties"])
                 assert not bad, f"{name}: calls {callee} with {sorted(bad)}, which it does not take"
+
+
+# --- nullability of the results ---------------------------------------------
+#
+# A result field central declares nullable comes as an explicit null (FastMCP
+# dumps the model without exclude_none). The plugin's REST endpoint /lsfusion
+# publishes its own output schema and hands the null on as it is (the IDE's MCP
+# server leaves a null field out instead), so if that schema's type leaves null
+# out, a client validating structuredContent drops the whole result: an article
+# walk or a single-query search lost all its chunks, and a feedback report
+# failed after it had been stored (lsfusion/plugin-idea#96). The checks above
+# compare names, so they passed. The platform proxy declares no output schema
+# for these tools.
+def _admits_null(prop: dict) -> bool:
+    t = prop.get("type")
+    return t == "null" or (isinstance(t, list) and "null" in t) \
+        or any(_admits_null(s) for s in prop.get("anyOf") or [])
+
+
+def _nullable(model) -> set[str]:
+    """Result fields of a model and its nested $defs that central may send as null."""
+    schema = model.model_json_schema()
+    return {name for m in [schema, *(schema.get("$defs") or {}).values()]
+            for name, prop in (m.get("properties") or {}).items() if _admits_null(prop)}
+
+
+RETRIEVE_OUT_NULLABLE = _nullable(RetrieveDocsOutput)
+FEEDBACK_OUT_NULLABLE = _nullable(FeedbackOutput)
+
+
+def _call_args(text: str, opening: str) -> str | None:
+    """What a call has after `opening` (which ends inside its parentheses), up
+    to its closing parenthesis. None when there is no such call."""
+    if opening not in text:
+        return None
+    start = text.index(opening) + len(opening)
+    end = _closing(text, start, "(", ")")
+    return None if end is None else text[start:end]
+
+
+def _code(text: str) -> str:
+    """The text without its comments."""
+    out, i = [], 0
+    while i < len(text):
+        j = _skip_literal(text, i)
+        if j == i:
+            out.append(text[i])
+            i += 1
+        else:
+            if not text.startswith(("//", "/*"), i):
+                out.append(text[i:j])
+            i = j
+    return "".join(out)
+
+
+def _declares_null(java: str, value: str | None, followed: frozenset = frozenset()) -> bool:
+    """The value's schema admits null as central declares it - a null branch of
+    its anyOf, or null in its type array - by itself or through a helper of the
+    file it calls, followed through helpers that call helpers."""
+    if value is None:
+        return False
+    code = _code(value)
+    flat = re.sub(r"\s+", "", code)  # one shape however it is wrapped
+    any_of, typed = _call_args(flat, '.put("anyOf",'), _call_args(flat, '.put("type",')
+    if (any_of is not None and '.put(newJSONObject().put("type","null"))' in any_of) \
+            or (typed is not None and typed.startswith("newJSONArray()") and '.put("null")' in typed):
+        return True
+    return any(f"JSONObject {h}(" in java
+               and _declares_null(java, _brace_slice(java, f"JSONObject {h}("), followed | {h})
+               for h in set(re.findall(r"\b([a-z]\w*)\(", code)) - followed)
+
+
+def _kotlin_types(params: str) -> dict[str, str]:
+    """The declared type of each `val` in a constructor's parameter list, by its
+    wire name: its @SerialName, else its own."""
+    types, depth, start, i = {}, 0, 0, 0
+    pieces = []
+    while i < len(params):
+        j = _skip_literal(params, i)
+        if j != i:
+            i = j
+            continue
+        c = params[i]
+        if c in "(<[{":
+            depth += 1
+        elif c in ")>]}":
+            depth -= 1
+        elif c == "," and depth == 0:
+            pieces.append(params[start:i])
+            start = i + 1
+        i += 1
+    pieces.append(params[start:])
+    for piece in pieces:
+        piece = _code(piece)
+        val = re.search(r"\bval\s+(\w+)\s*:", piece)
+        if val:
+            wire = re.search(r'@SerialName\("([^"]+)"\)', piece[:val.start()])
+            types[wire.group(1) if wire else val.group(1)] = piece[val.end():].split("=")[0].strip()
+    return types
+
+
+@pytest.mark.parametrize("descriptor,result,fields", [
+    ("JSONObject buildRetrieveDocsToolDescriptor(", "JSONObject docItemSchema", RETRIEVE_OUT_NULLABLE),
+    ("JSONObject buildReportFeedbackToolDescriptor(", "JSONObject outputSchema", FEEDBACK_OUT_NULLABLE),
+], ids=["retrieve_docs", "report_feedback"])
+def test_plugin_java_result_schemas_admit_null_where_central_sends_it(descriptor, result, fields):
+    java = _need(PLUGIN_JAVA)
+    region = _brace_slice(java, descriptor)
+    output = region[region.index(result):]  # the result schema, past the input one
+    bad = sorted(f for f in fields if not _declares_null(java, _call_args(output, f'.put("{f}",')))
+    assert not bad, f"plugin McpBaseService: result fields central sends as null, declared without null: {bad}"
+
+
+@pytest.mark.parametrize("dto,fields", [
+    ("data class RemoteDocItem(", RETRIEVE_OUT_NULLABLE),
+    ("data class FeedbackOutput(", FEEDBACK_OUT_NULLABLE),
+], ids=["retrieve_docs", "report_feedback"])
+def test_plugin_kotlin_result_dtos_are_nullable_where_central_sends_null(dto, fields):
+    # The IDE's MCP server builds the result schema from the DTO: a nullable
+    # Kotlin type becomes ["<type>", "null"], a non-nullable one leaves null out.
+    params = _call_args(_need(PLUGIN_KT), dto)
+    assert params is not None, f"plugin McpToolset: no {dto}"
+    types = _kotlin_types(params)
+    bad = sorted(f for f in fields if not types.get(f, "").endswith("?"))
+    assert not bad, f"plugin McpToolset {dto}: result fields central sends as null, not nullable: {bad}"
+
+
+def test_central_nullable_results_guard():
+    # An empty set would turn the two checks above green without checking anything.
+    assert {"score", "query"} <= RETRIEVE_OUT_NULLABLE
+    assert {"dedup_fingerprint", "detail"} <= FEEDBACK_OUT_NULLABLE
