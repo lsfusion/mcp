@@ -104,8 +104,10 @@ def _closing(text: str, i: int, opening: str, closing: str) -> int | None:
 
 def _brace_slice(text: str, marker: str) -> str:
     """Body from `marker` to its brace-matched close (a method)."""
-    start = text.index(marker)
-    end = _closing(text, text.index("{", start) + 1, "{", "}")
+    start = i = text.index(marker)
+    while text[i] != "{":  # past literals too: a parameter's description may hold one
+        i = max(_skip_literal(text, i), i + 1)
+    end = _closing(text, i + 1, "{", "}")
     return text[start:] if end is None else text[start:end + 1]
 
 
@@ -510,8 +512,9 @@ def _call_args(text: str, opening: str) -> str | None:
     return None if end is None else text[start:end]
 
 
-def _code(text: str) -> str:
-    """The text without its comments."""
+def _code(text: str, literals: bool = True) -> str:
+    """The text without its comments, and without its string and char literals
+    as well unless `literals`."""
     out, i = [], 0
     while i < len(text):
         j = _skip_literal(text, i)
@@ -519,7 +522,7 @@ def _code(text: str) -> str:
             out.append(text[i])
             i += 1
         else:
-            if not text.startswith(("//", "/*"), i):
+            if literals and not text.startswith(("//", "/*"), i):
                 out.append(text[i:j])
             i = j
     return "".join(out)
@@ -528,7 +531,8 @@ def _code(text: str) -> str:
 def _declares_null(java: str, value: str | None, followed: frozenset = frozenset()) -> bool:
     """The value's schema admits null as central declares it - a null branch of
     its anyOf, or null in its type array - by itself or through a helper of the
-    file it calls, followed through helpers that call helpers."""
+    file it calls (in code, not in a string), followed through helpers that call
+    helpers."""
     if value is None:
         return False
     code = _code(value)
@@ -539,7 +543,7 @@ def _declares_null(java: str, value: str | None, followed: frozenset = frozenset
         return True
     return any(f"JSONObject {h}(" in java
                and _declares_null(java, _brace_slice(java, f"JSONObject {h}("), followed | {h})
-               for h in set(re.findall(r"\b([a-z]\w*)\(", code)) - followed)
+               for h in set(re.findall(r"\b([a-z]\w*)\(", _code(value, literals=False))) - followed)
 
 
 def _kotlin_types(params: str) -> dict[str, str]:
@@ -578,7 +582,7 @@ def _kotlin_types(params: str) -> dict[str, str]:
 def test_plugin_java_result_schemas_admit_null_where_central_sends_it(descriptor, result, fields):
     java = _need(PLUGIN_JAVA)
     region = _brace_slice(java, descriptor)
-    output = region[region.index(result):]  # the result schema, past the input one
+    output = _code(region[region.index(result):])  # the result schema, past the input one
     bad = sorted(f for f in fields if not _declares_null(java, _call_args(output, f'.put("{f}",')))
     assert not bad, f"plugin McpBaseService: result fields central sends as null, declared without null: {bad}"
 
@@ -601,3 +605,13 @@ def test_central_nullable_results_guard():
     # An empty set would turn the two checks above green without checking anything.
     assert {"score", "query"} <= RETRIEVE_OUT_NULLABLE
     assert {"dedup_fingerprint", "detail"} <= FEEDBACK_OUT_NULLABLE
+
+
+@pytest.mark.parametrize("method", ["retrieveDocsDescriptor", "reportFeedbackDescriptor"],
+                         ids=["retrieve_docs", "report_feedback"])
+def test_platform_declares_no_result_schema_for_these_tools(method):
+    # The platform has no nullability check like the plugin's only because it
+    # declares no result schema for these tools.
+    region = _code(_brace_slice(_need(PLATFORM), f"JSONObject {method}("))
+    assert '"outputSchema"' not in region, \
+        f"platform MCPDispatcher.{method} declares a result schema now: check its nulls as the plugin's are"
