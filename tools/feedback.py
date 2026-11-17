@@ -46,6 +46,7 @@ from settings import (
 )
 from tools.caller import caller_fields
 from tools.event_log import emit
+from tools.caller import resolve_via
 
 TargetArtifact = Literal[
     "how-to", "rules", "brief", "paradigm", "language", "code-bug", "rag-retrieval",
@@ -322,6 +323,7 @@ def report_feedback_tool(report: FeedbackReport) -> FeedbackOutput:
             return _rejected(report_id, reason, _byte_len(report.model_dump_json()))
 
         red = _redact(report.model_dump(exclude_none=True))
+        red["via"] = resolve_via().kind
         # Backstop: redaction can grow fields (placeholders) — bound the STORED record too.
         size = _byte_len(json.dumps(red, ensure_ascii=False))
         if size > REPORT_MAX_TOTAL_CHARS:

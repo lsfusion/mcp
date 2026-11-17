@@ -26,7 +26,7 @@ import time
 import urllib.error
 import urllib.request
 
-from tools.caller import caller_fields
+from tools.caller import caller_fields, resolve_via
 from tools.event_log import emit
 
 GUIDANCE_BASE_URL = os.getenv("GUIDANCE_BASE_URL", "https://docs.lsfusion.org/")
@@ -81,7 +81,8 @@ SERVER_INSTRUCTIONS = (
     "your client saves the result to a file and shows only a preview, read "
     "that file in full before continuing.\n\n"
     "What that returns is the TOP article of each branch: the base material "
-    "plus a complete map of the branch's other articles. An area's rules are a "
+    "plus a complete map of the branch's other articles. It also carries the "
+    "brief and rules articles of your access kind. An area's rules are a "
     "separate article, read WHOLE with `lsfusion_get_guidance(rules='<area>')` "
     "— never searched, never excerpted. The map states, per area, the point at "
     "which reading it stops being optional; an area you did not read is not an "
@@ -102,9 +103,13 @@ SERVER_INSTRUCTIONS = (
 # are NOT in this response live.
 GUIDANCE_NOTICE = (
     "> IMPORTANT — this message contains the TOP article of each guidance "
-    "branch, each one whole between its `=== BEGIN ... ===` and "
-    "`=== END ... ===` lines: the base material plus the complete map of every "
-    "other article in that branch. It is not every rule that applies. An area's rules are a "
+    "branch, each followed by that branch's articles for the access kind this "
+    "call came by (what is reachable there, and how to work there). "
+    "Each article is whole between its `=== BEGIN ... ===` and "
+    "`=== END ... ===` lines. The top articles carry the base material and "
+    "the complete maps of their branches; each top's table of access kinds "
+    "names the other kinds' articles, read by name when needed. It is not every "
+    "rule that applies. An area's rules are a "
     "separate article, read whole with `lsfusion_get_guidance(rules='<area>')` "
     "using a name from the map below; the map states when each one becomes "
     "mandatory. A summary line in the map is an index entry, not the rule — do "
@@ -144,7 +149,10 @@ def _version_marker(text: str) -> str:
 
 
 def stamped_guidance(urls: list[str] | None = None, timeout: float | None = None) -> str:
-    """The top article of each branch, each one fenced, headed by the notice.
+    """Each branch's top article, then its articles of the caller's access kind.
+
+    Explicit URLs keep the test-facing fetch-only behaviour: no path articles
+    are added to that supplied set.
 
     Fenced for the same reason a named article is, and this is the call that
     needs it most: it is the one an assistant is told to make on every task, it
@@ -153,20 +161,31 @@ def stamped_guidance(urls: list[str] | None = None, timeout: float | None = None
     knowledge that the others exist.
 
     The version stamps the concatenated BODIES alone, so it equals an
-    independent hash of the published Brief+Rules and stays stable as the
+    independent hash of all the published bodies and stays stable as the
     fences and the notice wording evolve.
     """
+    via_articles = resolve_via().articles if urls is None else ()
     urls = [BRIEF_URL, RULES_URL] if urls is None else urls
     timeout = FETCH_TIMEOUT if timeout is None else timeout
     start = time.monotonic()
     try:
-        bodies = [_fetch(u, timeout) for u in urls]
+        # Each branch's top, then that branch's articles of the access kind: an
+        # access kind has both - what is reachable on it (brief) and how to work
+        # there (rules) - so each name is read from both branches.
+        articles = []
+        for u in urls:
+            branch = _branch_of(u)
+            articles.append((branch, "top", _fetch(u, timeout)))
+            if branch in BRANCH_PREFIX:
+                articles.extend((branch, name, _fetch_article(article_url(branch, name), timeout))
+                                for name in via_articles)
     except Exception as exc:  # noqa: BLE001 — log, then let it propagate unchanged
-        _log_guidance("top", None, "error", start, error=exc)
+        _log_guidance("top", None, "error", start, error=exc, via_articles=())
         raise
-    blocks = [fenced(_branch_of(u), "top", b) for u, b in zip(urls, bodies)]
-    body = "\n\n".join(bodies)
-    _log_guidance("top", None, "ok", start, chars=len(body), rev=guidance_version(body))
+    blocks = [fenced(branch, name, body) for branch, name, body in articles]
+    body = "\n\n".join(body for _, _, body in articles)
+    _log_guidance("top", None, "ok", start, chars=len(body), rev=guidance_version(body),
+                  via_articles=via_articles)
     return f"{_version_marker(body)}\n{GUIDANCE_NOTICE}\n\n" + "\n\n".join(blocks)
 
 
@@ -239,7 +258,8 @@ NOT_FOUND_NOTICE = (
 
 def _log_guidance(branch: str, area: str | None, outcome: str, start: float, *,
                   chars: int | None = None, rev: str | None = None,
-                  error: BaseException | None = None) -> None:
+                  error: BaseException | None = None,
+                  via_articles: tuple[str, ...] | None = None) -> None:
     """One `get_guidance` event, never the article text. NEVER raises.
 
     This is what makes adoption measurable at all: `retrieve_docs` has been
@@ -259,6 +279,8 @@ def _log_guidance(branch: str, area: str | None, outcome: str, start: float, *,
             "latency_ms": int((time.monotonic() - start) * 1000),
             **caller_fields(),
         }
+        if via_articles is not None:
+            fields["via_articles"] = list(via_articles)
         if error is not None:
             # Class and HTTP status only. `str(exc)` is not safe to log: a
             # refused redirect carries the full target URL, query string and

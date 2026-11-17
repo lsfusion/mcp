@@ -44,6 +44,7 @@ def test_get_guidance_result_is_plain_text_not_json_wrapped(mcp_server, monkeypa
     import tools.guidance as g
 
     monkeypatch.setattr(g, "_fetch", lambda url, timeout: "line1\nline2")
+    monkeypatch.setattr(g, "_fetch_article", lambda url, timeout: "line1\nline2")
 
     result = asyncio.run(
         mcp_server._tool_manager.call_tool(
@@ -57,6 +58,7 @@ def test_get_guidance_result_is_plain_text_not_json_wrapped(mcp_server, monkeypa
     assert [b.type for b in result] == ["text"]
     text = result[0].text
     assert "line1\nline2" in text
+    assert "=== BEGIN lsfusion rules/via_dev |" in text
     assert text.rstrip().endswith("===")  # the fence must survive the transport
     assert not text.lstrip().startswith('{"result"')
 

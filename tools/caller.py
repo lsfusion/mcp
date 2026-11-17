@@ -20,13 +20,82 @@ lookup. Absent it, the field is simply missing rather than guessed.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 _MODEL_HEADER = "x-agent-model"
+
+# Two hierarchies: `idedev` extends `dev` (development on the source; a direct
+# connection is `dev` itself), `webapp` extends `app` (work in a running
+# application). A kind's articles = its ancestor's, then its own. Old application
+# proxies cannot tell app from webapp, so their fallback carries both.
+_VIA_ARTICLES = {
+    "dev": ("via_dev",),
+    "idedev": ("via_dev", "via_idedev"),
+    "app": ("via_app",),
+    "webapp": ("via_app", "via_webapp"),
+    "legacy-server": ("via_app", "via_webapp"),
+}
+
+@dataclass(frozen=True)
+class CallerVia:
+    kind: str
+    articles: tuple[str, ...]
+    given: str | None = None  # Only an unrecognized `via` value, capped for logging.
+
+
+def _fallback_kind(ctx) -> str:
+    """The kind of a request without `via`, from our old proxies' client names.
+
+    clientInfo is the SESSION's: this fallback needs the stateful transport (the
+    server's default) - a stateless call has none, and then it is `dev`.
+    """
+    try:
+        name = ctx.session.client_params.clientInfo.name
+    except Exception:  # noqa: BLE001 — no session, no fallback
+        return "dev"
+    if name == "lsfusion-intellij":
+        return "idedev"
+    if name == "lsfusion-server":
+        return "legacy-server"
+    return "dev"
+
+
+def resolve_via() -> CallerVia:
+    """Resolve the CURRENT HTTP request's access kind; never cache on a session.
+
+    Only our old proxies' client names are fallbacks. No HTTP request (including
+    stdio), or unavailable context, means `dev`. Identity must never break a
+    call. Other query parameters - the skills plugin's `with=skills` among them -
+    are not read: they carry no meaning for the answer yet.
+    """
+    kind = "dev"
+    given = None
+    try:
+        from mcp.server.lowlevel.server import request_ctx
+        ctx = request_ctx.get(None)
+        if ctx is not None and ctx.request is not None:
+            value = ctx.request.query_params.get("via")
+            if value is not None:
+                if value in _VIA_ARTICLES and value != "legacy-server":
+                    kind = value
+                else:
+                    given = str(value)[:60]
+            else:
+                kind = _fallback_kind(ctx)
+    except Exception:  # noqa: BLE001 — identity is never worth an exception
+        pass
+    return CallerVia(kind, _VIA_ARTICLES[kind], given)
 
 
 def caller_fields() -> dict:
-    """Client identity for an event. NEVER raises; returns {} when unavailable
-    (stdio transport, no active request, a future SDK that moves any of this)."""
-    out: dict = {}
+    """Client identity and access path for an event. NEVER raises.
+
+    Unavailable identity still carries the default access kind, `dev`.
+    """
+    via = resolve_via()
+    out: dict = {"via": via.kind}
+    if via.given is not None:
+        out["via_given"] = via.given
     try:
         from mcp.server.lowlevel.server import request_ctx
         ctx = request_ctx.get(None)
@@ -54,5 +123,5 @@ def caller_fields() -> dict:
         except Exception:  # noqa: BLE001
             pass
     except Exception:  # noqa: BLE001
-        return {}
+        pass
     return out

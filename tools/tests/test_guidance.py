@@ -8,6 +8,7 @@ fetch failures propagate (no cache/fallback).
 from __future__ import annotations
 
 import io
+import re
 import urllib.error
 
 import pytest
@@ -114,6 +115,114 @@ def test_the_start_of_session_call_fences_each_top_article(monkeypatch):
     assert out.rstrip().endswith("===")
 
 
+@pytest.mark.parametrize("via,client,kind,names", [
+    ("dev", "Claude Code", "dev", ["via_dev"]),
+    ("idedev", "Claude Code", "idedev", ["via_dev", "via_idedev"]),
+    ("app", "lsfusion-server", "app", ["via_app"]),
+    ("webapp", "lsfusion-server", "webapp", ["via_app", "via_webapp"]),
+    (None, "lsfusion-server", "legacy-server", ["via_app", "via_webapp"]),
+    (None, "lsfusion-intellij", "idedev", ["via_dev", "via_idedev"]),
+    (None, "Claude Code", "dev", ["via_dev"]),
+    ("unknown", "lsfusion-server", "dev", ["via_dev"]),
+])
+def test_start_answer_assembly_matrix(monkeypatch, caller_context, via, client, kind, names):
+    caller_context(via=via, name=client)
+    seen = []
+
+    def fetch(url, timeout=None):
+        seen.append((url, timeout))
+        return _FakeResp(f"body of {url}".encode(), url)
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", fetch)
+    calls = _capture(monkeypatch)
+
+    out = g.stamped_guidance(timeout=3)
+
+    urls = ([g.BRIEF_URL] + [g.article_url("brief", name) for name in names]
+            + [g.RULES_URL] + [g.article_url("rules", name) for name in names])
+    labels = (["brief/top"] + [f"brief/{name}" for name in names]
+              + ["rules/top"] + [f"rules/{name}" for name in names])
+    assert seen == [(url, 3) for url in urls]
+    assert re.findall(r"^=== BEGIN lsfusion (\S+) \|", out, re.M) == labels
+    assert re.findall(r"^=== END lsfusion (\S+) \|", out, re.M) == labels
+    bodies = [f"body of {url}" for url in urls]
+    body = "\n\n".join(bodies)
+    blocks = [g.fenced(*label.split("/"), text) for label, text in zip(labels, bodies)]
+    assert out == f"<!-- lsfusion-guidance version: {g.guidance_version(body)} -->\n{g.GUIDANCE_NOTICE}\n\n" + "\n\n".join(blocks)
+    (event,) = calls
+    assert event["ok"] is True
+    assert event["fields"]["via"] == kind
+    assert event["fields"]["via_articles"] == names
+    assert event["fields"]["rev"] == g.guidance_version(body)
+    assert event["fields"]["chars"] == len(body)
+
+
+def test_explicit_urls_do_not_add_path_articles(monkeypatch, caller_context):
+    caller_context(via="webapp")
+    seen = []
+
+    def fetch(url, timeout=None):
+        seen.append(url)
+        return _FakeResp(b"BODY", url)
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", fetch)
+    calls = _capture(monkeypatch)
+    out = g.stamped_guidance(["http://a/Brief.md"])
+    assert seen == ["http://a/Brief.md"]
+    assert out.endswith(g.fenced("brief", "top", "BODY"))
+    assert "=== BEGIN lsfusion rules/" not in out
+    assert calls[0]["fields"]["via_articles"] == []
+
+
+@pytest.mark.parametrize("via,client,name", [
+    ("dev", "Claude Code", "via_dev"),
+    ("idedev", "Claude Code", "via_dev"),
+    ("idedev", "Claude Code", "via_idedev"),
+    ("app", "lsfusion-server", "via_app"),
+    ("webapp", "lsfusion-server", "via_app"),
+    ("webapp", "lsfusion-server", "via_webapp"),
+    (None, "lsfusion-server", "via_webapp"),
+])
+@pytest.mark.parametrize("failure", ["404", "500", "network", "timeout", "redirect", "html"])
+@pytest.mark.parametrize("branch", ["brief", "rules"])
+def test_any_failed_via_article_fails_the_whole_top_call(
+        monkeypatch, caller_context, via, client, name, failure, branch):
+    caller_context(via=via, name=client)
+    target = g.article_url(branch, name)
+    error_type = {
+        "404": g._NotThisArticle,
+        "500": _FakeHTTPError,
+        "network": urllib.error.URLError,
+        "timeout": TimeoutError,
+        "redirect": g._NotThisArticle,
+        "html": g._NotThisArticle,
+    }[failure]
+
+    def fetch(url, timeout=None):
+        if url != target:
+            return _FakeResp(b"VALID BODY", url)
+        if failure in ("404", "500"):
+            raise _FakeHTTPError(int(failure))
+        if failure == "network":
+            raise urllib.error.URLError("down")
+        if failure == "timeout":
+            raise TimeoutError()
+        if failure == "redirect":
+            return _FakeResp(b"OTHER ARTICLE", g.BRIEF_URL)
+        return _FakeResp(b" \n<!doctype html><h1>Not found</h1>", url)
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", fetch)
+    calls = _capture(monkeypatch)
+    with pytest.raises(error_type):
+        g.stamped_guidance()
+    (event,) = calls
+    assert event["ok"] is False
+    assert event["fields"]["branch"] == "top"
+    assert event["fields"]["outcome"] == "error"
+    assert event["fields"]["error"] == error_type.__name__
+    assert event["fields"]["via_articles"] == []  # No partial answer was served.
+
+
 def test_server_instructions_fit_under_client_truncation_cap():
     # Clients cap `instructions` (Claude Code at ~2 KB). If this text ever grows
     # past the cap it arrives mutilated, so guard the budget explicitly.
@@ -146,6 +255,7 @@ def test_notice_does_not_claim_completeness_or_flatten_rule_strength():
     assert "retrieve_docs" not in lowered
     assert "lsfusion_get_guidance(rules='<area>')" in g.GUIDANCE_NOTICE
     assert "should" in lowered and "must" in lowered
+    assert "access kind" in lowered and "table of access kinds" in lowered
 
 
 def test_server_instructions_do_not_flatten_rule_strength():
@@ -167,6 +277,22 @@ def test_area_name_maps_to_the_branch_prefixed_slug():
     assert g.article_url("brief", "interface") == f"{g.GUIDANCE_BASE_URL}Brief_interface.md"
     # Case and surrounding space are the caller's, not an error.
     assert g.article_url("rules", "  Logic ") == f"{g.GUIDANCE_BASE_URL}Rules_logic.md"
+    assert g.article_url("rules", "via_idedev") == f"{g.GUIDANCE_BASE_URL}Rules_via_idedev.md"
+
+
+def test_named_path_article_is_read_alone_regardless_of_current_path(monkeypatch, caller_context):
+    caller_context(via="app")
+    seen = []
+
+    def fetch(url, timeout=None):
+        seen.append(url)
+        return _FakeResp(b"IDE RULES", url)
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", fetch)
+    out = g.read_article("rules", "via_idedev")
+    assert seen == [g.article_url("rules", "via_idedev")]
+    assert out.endswith(g.fenced("rules", "via_idedev", "IDE RULES"))
+    assert "rules/via_app" not in out and "rules/via_dev" not in out
 
 
 def test_top_aliases_reach_the_branch_top_article():
@@ -318,6 +444,8 @@ def test_the_start_of_session_call_is_logged_as_top(monkeypatch):
     (c,) = calls
     assert c["fields"]["branch"] == "top" and c["fields"]["area"] is None
     assert c["fields"]["outcome"] == "ok"
+    assert c["fields"]["via"] == "dev"
+    assert c["fields"]["via_articles"] == ["via_dev"]
 
 
 def test_logging_can_never_break_the_call(monkeypatch):

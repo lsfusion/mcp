@@ -160,6 +160,39 @@ def test_rejected_when_the_write_fails_and_nothing_is_left(inbox, monkeypatch):
     assert "problem_summary" not in c["fields"]
 
 
+@pytest.mark.parametrize("via,client,kind", [
+    ("dev", "Claude Code", "dev"),
+    ("idedev", "Claude Code", "idedev"),
+    ("app", "lsfusion-server", "app"),
+    ("webapp", "lsfusion-server", "webapp"),
+    (None, "lsfusion-intellij", "idedev"),
+    (None, "lsfusion-server", "legacy-server"),
+    ("unknown", "lsfusion-server", "dev"),
+])
+def test_stored_report_is_stamped_with_server_resolved_via(
+        inbox, monkeypatch, caller_context, via, client, kind):
+    caller_context(via=via, name=client)
+    _capture_emit(monkeypatch)
+    report = _report(via="agent-supplied-value")
+    assert "via" not in FeedbackReport.model_json_schema()["properties"]
+    assert "via" not in report.model_dump()
+    assert report_feedback_tool(report).status == "recorded"
+    assert _stored(inbox)["via"] == kind
+
+
+def test_via_stamp_changes_per_request_and_preserves_dedup(inbox, monkeypatch, caller_context):
+    _capture_emit(monkeypatch)
+    report = _report()
+    first = caller_context(name="lsfusion-server", via="app")
+    a = report_feedback_tool(report)
+    second = caller_context(name="lsfusion-server", via="webapp")
+    second.session = first.session
+    b = report_feedback_tool(report)
+    stored = [json.loads(f.read_text(encoding="utf-8")) for f in _files(inbox)]
+    assert sorted(r["via"] for r in stored) == ["app", "webapp"]
+    assert a.dedup_fingerprint == b.dedup_fingerprint
+
+
 def test_rejected_when_the_inbox_cannot_be_created(tmp_path, monkeypatch):
     _capture_emit(monkeypatch)
     blocker = tmp_path / "not-a-dir"
