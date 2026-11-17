@@ -210,13 +210,21 @@ def test_plugin_kotlin_retrieve_dtos_cover_central_output():
     _assert_declares(region, RETRIEVE_OUT_FIELDS, who, kotlin=True)
 
 
-def test_plugin_kotlin_wrapper_forwards_the_exclusion_list():
-    # The DTO block above cannot see the call site: the Kotlin wrapper has to
-    # both accept the parameter and put it on the wire under its snake_case name.
+def test_plugin_kotlin_wrapper_takes_every_parameter_by_its_central_name():
+    # The DTO block above cannot see the call site. The IDE's MCP server names
+    # an argument after its Kotlin parameter and drops any key that matches
+    # none, without a word: the wrapper took the list as `excludeIds`, every
+    # `exclude_ids` an agent sent was lost, and paging by `status` returned the
+    # same chunks again. So each central parameter must be a Kotlin parameter of
+    # the same name (`queries` and `articles` are extra list halves of `query`
+    # and `article`), and reach the wire under that name.
     text = _need(PLUGIN_KT)
-    region = _brace_slice(text, "suspend fun retrieveDocs(")
-    assert "excludeIds" in region, "plugin McpToolset: retrieveDocs takes no exclusion list"
-    assert '"exclude_ids"' in region, "plugin McpToolset: exclusion list never reaches the wire"
+    params = _call_args(text, "suspend fun retrieveDocs(")
+    assert params is not None, "plugin McpToolset: no retrieveDocs"
+    who = "plugin McpToolset (retrieveDocs)"
+    missing = sorted(RETRIEVE_IN_FIELDS - set(re.findall(r"(\w+)\s*:", _code(params, literals=False))))
+    assert not missing, f"{who}: no Kotlin parameter named as central's {missing}"
+    _assert_declares(_brace_slice(text, "suspend fun retrieveDocs("), RETRIEVE_IN_FIELDS, who)
 
 
 # --- get_guidance ----------------------------------------------------------
