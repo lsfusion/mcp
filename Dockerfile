@@ -21,5 +21,12 @@ COPY --from=base /app /app
 RUN useradd -u 10001 -m appuser
 USER appuser
 
+# The commit this image was built from; every event-log line carries it as
+# server_version (settings.py). CI passes github.sha. A local build without
+# --build-arg leaves it empty, and settings falls back to MCP_SERVER_VERSION.
+# Kept last: it changes on every build and would rebuild the layers after it.
+ARG GIT_SHA=""
+ENV MCP_BUILD_SHA=$GIT_SHA
+
 EXPOSE 8000
 CMD ["python", "server.py", "http", "--host", "0.0.0.0", "--port", "8000"]

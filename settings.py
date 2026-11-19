@@ -173,9 +173,17 @@ SNAPSHOT_MAX_AGE_DAYS = float(os.environ.get("SNAPSHOT_MAX_AGE_DAYS", "7"))
 # caller typed, and `queries` / `query_stats` / `results[].query_index` carry
 # what actually happened. Group analytics by `queries`, never by the join.
 LOG_SCHEMA_VERSION = 4
-# Stamped into every event so analytics can attribute records to a build. Ops
-# should set this (image digest / git sha) in the deployment env.
-SERVER_VERSION = os.environ.get("MCP_SERVER_VERSION", "unknown")
+# Stamped into every event so a record can be traced to the code that wrote
+# it. The image carries the commit it was built from as MCP_BUILD_SHA (CI
+# passes github.sha), and that wins: MCP_SERVER_VERSION was set by hand in the
+# deploy host's .env, and kept naming one build while every deploy since
+# shipped different code. It stays only as the fallback for a build that
+# carries no commit — a local `docker build`, a dev run.
+def _server_version(env=os.environ) -> str:
+    return env.get("MCP_BUILD_SHA") or env.get("MCP_SERVER_VERSION") or "unknown"
+
+
+SERVER_VERSION = _server_version()
 # Directory for dated JSONL event files. Empty => stderr only (A1). A2 points
 # this at the bind-mounted host dir on ai.lsfusion.org.
 LOG_DIR = os.environ.get("LOG_DIR", "")

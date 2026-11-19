@@ -65,7 +65,7 @@ guarantee: a query whose best chunks all belong to a neighbour returns fewer.
 - `OPENAI_API_KEY` — OpenAI API key (required).
 - `RAG_VECTOR_STORE_ID` — OpenAI Vector Store id that `lsfusion_retrieve_docs` searches against (required). Must match the store populated by the `ragIngestDocs` Jenkins pipeline.
 - `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`).
-- `MCP_SERVER_VERSION` — build identifier (image digest / git sha) stamped into every event log line (default `unknown`).
+- `MCP_BUILD_SHA` / `MCP_SERVER_VERSION` — the build identifier stamped into every event log line as `server_version`. The image carries the git commit it was built from as `MCP_BUILD_SHA` (CI passes `github.sha`), and that wins; `MCP_SERVER_VERSION` is only the fallback for a build without it (default `unknown`).
 - `LOG_DIR` — directory for dated JSONL event files. Empty (default) ⇒ event logs go to **stderr only**. Set it to a writable (uid 10001) bind-mount to also append `retrieval-YYYYMMDD.jsonl` (Phase A2).
 - `RETRIEVAL_BACKEND` — `store` (OpenAI Vector Store) or `local` (the in-process snapshot; falls back to the store when the snapshot is missing or the embedding call fails).
 - `RAG_SNAPSHOT_PATH` — where the local backend looks for the corpus snapshot (default `/data/snapshot/corpus.npz`).

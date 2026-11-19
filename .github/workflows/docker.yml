@@ -31,6 +31,9 @@ jobs:
           context: .
           push: ${{ github.ref == 'refs/heads/main' }}
           tags: ghcr.io/lsfusion/mcp:latest
+          # Becomes server_version in every event-log line (Dockerfile ->
+          # MCP_BUILD_SHA), so a feedback report names the commit that served it.
+          build-args: GIT_SHA=${{ github.sha }}
 
       # Redeploy production only from main. Runs after the image is pushed,
       # so the deployMcp job (pulls :latest on ai.lsfusion.org) sees the new
