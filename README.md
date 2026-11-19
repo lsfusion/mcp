@@ -79,7 +79,19 @@ guarantee: a query whose best chunks all belong to a neighbour returns fewer.
 Every `lsfusion_retrieve_docs` call emits one structured JSON line (best-effort — a logging failure never breaks the tool). Envelope `{schema_version, event, ts (ISO-8601 UTC ms), server_version, ok}` plus `{query (capped), type, n_requested, n_results, top_score = max(results[].score), latency_ms, results:[{rank, source, file_id, filename, score}]}` — no chunk text; `error_class`/`error_message` on failure. Written to **stderr** (keeps the STDIO transport's stdout protocol channel clean; Docker's `json-file` captures stderr anyway), and additionally to a dated file when `LOG_DIR` is set. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Feedback reports
-Each report `lsfusion_report_feedback` records becomes one file, `<REPORTS_DIR>/inbox/<UTC YYYYMMDDTHHMMSS>-<report_id>.json` (e.g. `20261119T101500-rpt_3f9c2a71d04e8b65.json`), so the names sort by time. The file holds the redacted report plus `report_id`, `ts`, `schema_version`, `server_version`, `dedup_fingerprint`, and `client` / `client_version` from the MCP handshake when the client gave them. It is written as `.<name>.tmp` in the same folder and renamed into place, so a reader that takes `*.json` never sees half a report. A separate worker, not part of this repo, turns each file into an issue in `lsfusion/platform-feedback` and moves it out of the inbox.
+Each report `lsfusion_report_feedback` records becomes one file, `<REPORTS_DIR>/inbox/<UTC YYYYMMDDTHHMMSS>-<report_id>.json` (e.g. `20261119T101500-rpt_3f9c2a71d04e8b65.json`), so the names sort by time. The file holds the redacted report plus `report_id`, `ts`, `schema_version`, `server_version`, `dedup_fingerprint`, and `client` / `client_version` from the MCP handshake when the client gave them. It is written as `.<name>.tmp` in the same folder and renamed into place, so a reader that takes `*.json` never sees half a report.
+
+The worker `tools/feedback_issues.py` turns each file, oldest first, into one issue in `lsfusion/platform-feedback`, then writes the record with `issue_number` and `issue_url` added to `<REPORTS_DIR>/processed/` and removes it from the inbox. It runs in the mcp container, the GitHub token on stdin:
+
+```bash
+docker exec -i stack-mcp-1 python -m tools.feedback_issues < /etc/lsfusion-feedback/github-token
+python -m tools.feedback_issues --dry-run --reports-dir DIR [--out PREVIEW_DIR]   # no token, no network
+```
+
+- **Issue:** the title is the start of `problem_summary` (about 100 characters, cut at a word). The body has short sections (problem, expected vs actual, suggested change, eval errors, outcome, who reported it), the full record in a collapsed JSON block, and ends with `<!-- report_id: rpt_… -->`. Agent text cannot ping or link: mentions, `#123` references, URLs and link brackets get a zero-width space, and HTML is escaped outside code. Over GitHub's size limit the JSON block is cut first.
+- **Labels:** two per issue, `area:docs|platform|search` and `target:<primary_target>`. The worker creates any of its 11 labels that are missing, each with a description, and never changes other labels.
+- **No duplicates:** before posting, it lists the repo's issues created since the oldest pending report (the issues list, not search, so it is never stale) and only moves a file whose issue already carries its marker. Runs must not overlap.
+- **Limits:** writes are 2 s apart. On a rate-limit answer (403/429) it stops and leaves the rest for the next run. It prints `posted N, skipped N, failed N, left N` and exits 1 if anything failed, 2 if there is no token.
 
 The `reports` event stream carries no report content: a stored report logs one `report_stored` line with `report_id`, `signal_type` and `payload_size`, and a refused one logs `report_feedback` with `ok: false` and its `reason`. Full `report_feedback` records with `ok: true` are what schema v4 and earlier wrote, before reports moved to files.
 

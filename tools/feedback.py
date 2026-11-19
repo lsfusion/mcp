@@ -14,8 +14,8 @@ Server side: assign a `report_id`, enforce anti-abuse caps, run a best-effort
 redaction pass (defense-in-depth — NOT anonymization; the agent is instructed to
 send no code/customer data), compute the canonical `dedup_fingerprint`, and
 store the (redacted) report as its own JSON file in `<REPORTS_DIR>/inbox/`,
-named `<UTC YYYYMMDDTHHMMSS>-<report_id>.json` so the names sort by time. A
-separate worker (not in this repo) turns each file into an issue in
+named `<UTC YYYYMMDDTHHMMSS>-<report_id>.json` so the names sort by time. The
+worker `tools/feedback_issues.py` turns each file into an issue in
 `lsfusion/platform-feedback` and moves it out of the inbox. The file is written
 under a dot-prefixed `.tmp` name in the same folder and renamed into place, so
 the worker never sees half a report. The `reports` event stream gets only a
