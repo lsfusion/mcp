@@ -13,26 +13,38 @@ schema, exactly like `retrieve_docs`).
 Server side: assign a `report_id`, enforce anti-abuse caps, run a best-effort
 redaction pass (defense-in-depth — NOT anonymization; the agent is instructed to
 send no code/customer data), compute the canonical `dedup_fingerprint`, and
-append the (redacted) report to the `reports` event stream. Consent + the
-"when to report" trigger live in a workflow Rule served by `get_guidance`.
+store the (redacted) report as its own JSON file in `<REPORTS_DIR>/inbox/`,
+named `<UTC YYYYMMDDTHHMMSS>-<report_id>.json` so the names sort by time. A
+separate worker (not in this repo) turns each file into an issue in
+`lsfusion/platform-feedback` and moves it out of the inbox. The file is written
+under a dot-prefixed `.tmp` name in the same folder and renamed into place, so
+the worker never sees half a report. The `reports` event stream gets only a
+short `report_stored` line, with no report content. Consent + the "when to
+report" trigger live in a workflow Rule served by `get_guidance`.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 from settings import (
     FEEDBACK_ENABLED,
+    LOG_SCHEMA_VERSION,
     REPORT_MAX_EVAL_ERRORS,
     REPORT_MAX_QUERIES,
     REPORT_CODE_EXCERPT_MAX_CHARS,
     REPORT_MAX_TOTAL_CHARS,
+    REPORTS_DIR,
+    SERVER_VERSION,
 )
+from tools.caller import caller_fields
 from tools.event_log import emit
 
 TargetArtifact = Literal[
@@ -129,7 +141,8 @@ class FeedbackReport(BaseModel):
         None, max_length=200, description="Optional agent hint; the SERVER computes the canonical dedup_fingerprint.")
     lsfusion_version: Optional[str] = Field(None, max_length=100)
     deployment_kind: Optional[str] = Field(None, max_length=100)
-    agent: Optional[str] = Field(None, max_length=100, description="Reporting client name/version, e.g. claude-code.")
+    agent: Optional[str] = Field(
+        None, max_length=100, description="Reporting agent and model, e.g. 'claude-code, claude-opus-4-5'.")
     n_eval_attempts: Optional[int] = None
 
 
@@ -240,8 +253,63 @@ def _rejected(report_id: str, reason: str, payload_size: int = 0) -> FeedbackOut
     return FeedbackOutput(report_id=report_id, status="rejected", detail=reason)
 
 
+STORE_FAILED = "the server could not store the report"
+
+# What a stored report takes from caller_fields(): the client the handshake
+# named. Not user_agent (it says no more than the client does) and not
+# declared_model (caller-declared, never verified; the agent names its model in
+# `agent` instead).
+_CALLER_KEYS = ("client", "client_version")
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _not_stored(report_id: str, payload_size: int, cause: str) -> FeedbackOutput:
+    # Same contentless shape as a rejection; `cause` says why for whoever reads the log.
+    try:
+        emit("report_feedback",
+             {"report_id": report_id, "reason": STORE_FAILED, "cause": cause,
+              "payload_size": payload_size},
+             stream="reports", ok=False)
+    except Exception:  # noqa: BLE001 — the answer must stay STORE_FAILED
+        pass
+    return FeedbackOutput(report_id=report_id, status="rejected", detail=STORE_FAILED)
+
+
+def _store(record: dict, name: str) -> None:
+    """Write `record` to `<REPORTS_DIR>/inbox/<name>`, all at once or not at all.
+
+    The JSON goes to `.<name>.tmp` in the same folder first — same folder, so
+    the rename cannot cross filesystems, and a dot name ending in `.tmp`, so a
+    worker reading `*.json` never picks up a file still being written. Only a
+    complete, flushed file is renamed into place. Raises on any failure, after
+    removing its temp file.
+    """
+    inbox = os.path.join(REPORTS_DIR, "inbox")
+    os.makedirs(inbox, exist_ok=True)
+    tmp = os.path.join(inbox, "." + name + ".tmp")
+    created = False
+    try:
+        with open(tmp, "x", encoding="utf-8") as f:
+            created = True
+            json.dump(record, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, os.path.join(inbox, name))
+    except Exception:
+        if created:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+        raise
+
+
 def report_feedback_tool(report: FeedbackReport) -> FeedbackOutput:
-    """Validate, redact, fingerprint and record one feedback report. See module docstring."""
+    """Validate, redact, fingerprint and store one feedback report. See module docstring."""
     if not FEEDBACK_ENABLED:
         return FeedbackOutput(
             report_id="", status="disabled",
@@ -255,16 +323,42 @@ def report_feedback_tool(report: FeedbackReport) -> FeedbackOutput:
 
         red = _redact(report.model_dump(exclude_none=True))
         # Backstop: redaction can grow fields (placeholders) — bound the STORED record too.
-        stored = json.dumps(red, ensure_ascii=False)
-        if _byte_len(stored) > REPORT_MAX_TOTAL_CHARS:
+        size = _byte_len(json.dumps(red, ensure_ascii=False))
+        if size > REPORT_MAX_TOTAL_CHARS:
             return _rejected(report_id, f"redacted payload exceeds {REPORT_MAX_TOTAL_CHARS} bytes",
-                             _byte_len(stored))
+                             size)
 
         dedup = _dedup_fingerprint(red)
-        red["report_id"] = report_id
-        red["dedup_fingerprint"] = dedup
-        emit("report_feedback", red, stream="reports", ok=True)
-        return FeedbackOutput(report_id=report_id, status="recorded", dedup_fingerprint=dedup)
+        if not REPORTS_DIR:
+            return _not_stored(report_id, size, "no reports dir configured")
+
+        now = _utc_now()
+        caller = caller_fields()
+        # Server fields first, for whoever opens the file; the report's own
+        # field names never collide with them (FeedbackReport defines none).
+        record = {
+            "report_id": report_id,
+            "ts": now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "schema_version": LOG_SCHEMA_VERSION,
+            "server_version": SERVER_VERSION,
+            **{k: caller[k] for k in _CALLER_KEYS if caller.get(k)},
+            "dedup_fingerprint": dedup,
+            **red,
+        }
+        try:
+            _store(record, f"{now:%Y%m%dT%H%M%S}-{report_id}.json")
+        except Exception as e:  # noqa: BLE001
+            return _not_stored(report_id, size, type(e).__name__)
     except Exception:  # noqa: BLE001 — never 500 the tool on processing failure
         # Don't emit here: the failure may BE in emit; re-calling it could re-raise.
         return FeedbackOutput(report_id=report_id, status="rejected", detail="processing error")
+
+    # The file is in the inbox, so the report IS recorded, whatever the log
+    # does next: answering otherwise would only get it sent twice.
+    try:
+        emit("report_stored",
+             {"report_id": report_id, "signal_type": red["signal_type"], "payload_size": size},
+             stream="reports", ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+    return FeedbackOutput(report_id=report_id, status="recorded", dedup_fingerprint=dedup)

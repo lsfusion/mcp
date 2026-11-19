@@ -10,7 +10,7 @@ Transports:
 ## Core Tools
 - `lsfusion_get_guidance(rules?: string, brief?: string)`: Read ONE guidance article whole. With no arguments, the top article of each branch — base material plus the complete map of that branch. With a name, that area's article entire: no search, no ranking, no excerpt.
 - `lsfusion_retrieve_docs(query: string | string[], type?: "language" | "paradigm" | "how-to")`: Official documentation search (English content only). All three reference branches are searched when `type` is omitted. `brief` and `rules` are still accepted for compatibility but are no longer part of the corpus — those two branches are addressed by name through `lsfusion_get_guidance`, and passing one here returns a pointer to that tool.
-- `lsfusion_report_feedback(report)`: Submit one anonymous, depersonalized reinforcement-quality signal (the feedback-loop sink) — classified by `signal_type` (doc gap, expectation-mismatch, unclear `eval` error, missing capability, RAG miss, other). The agent calls it — per the `get_guidance` workflow rule and only with user consent — when a task hit action-affecting friction. Server-side: anti-abuse caps, best-effort redaction, server-computed `dedup_fingerprint`, append to the `reports` event stream. Gated by `FEEDBACK_ENABLED`. Returns `{report_id, status, dedup_fingerprint}`. See `MCP-FEEDBACK-PLAN.md`.
+- `lsfusion_report_feedback(report)`: Submit one anonymous, depersonalized reinforcement-quality signal (the feedback-loop sink) — classified by `signal_type` (doc gap, expectation-mismatch, unclear `eval` error, missing capability, RAG miss, other). The agent calls it — per the `get_guidance` workflow rule and only with user consent — when a task hit action-affecting friction. Server-side: anti-abuse caps, best-effort redaction, server-computed `dedup_fingerprint`, then each report is stored as its own JSON file in `<REPORTS_DIR>/inbox/` (see [Feedback reports](#feedback-reports)). `status` is `recorded` only once that file is written; with no reports dir, or a failed write, it is `rejected` with `detail` "the server could not store the report". Gated by `FEEDBACK_ENABLED`. Returns `{report_id, status, dedup_fingerprint}`. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Quickstart (local)
 
@@ -66,7 +66,9 @@ guarantee: a query whose best chunks all belong to a neighbour returns fewer.
 - `RAG_VECTOR_STORE_ID` — OpenAI Vector Store id that `lsfusion_retrieve_docs` searches against (required). Must match the store populated by the `ragIngestDocs` Jenkins pipeline.
 - `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`).
 - `MCP_BUILD_SHA` / `MCP_SERVER_VERSION` — the build identifier stamped into every event log line as `server_version`. The image carries the git commit it was built from as `MCP_BUILD_SHA` (CI passes `github.sha`), and that wins; `MCP_SERVER_VERSION` is only the fallback for a build without it (default `unknown`).
-- `LOG_DIR` — directory for dated JSONL event files. Empty (default) ⇒ event logs go to **stderr only**. Set it to a writable (uid 10001) bind-mount to also append `retrieval-YYYYMMDD.jsonl` (Phase A2).
+- `LOG_DIR` — directory for dated JSONL event files. Empty (default) ⇒ event logs go to **stderr only**. Set it to a writable (uid 10001) bind-mount to also append `<stream>-YYYYMMDD.jsonl` (`retrieval`, `reports`; Phase A2). It is also the default parent of `REPORTS_DIR`.
+- `REPORTS_DIR` — where `lsfusion_report_feedback` stores reports, one file each in `<REPORTS_DIR>/inbox/`. Default `<LOG_DIR>/reports`, so the `LOG_DIR` bind mount holds them; empty when neither is set, and then every report is refused.
+- `FEEDBACK_ENABLED` — `0` turns `lsfusion_report_feedback` off (it answers `disabled` and stores nothing). Default on.
 - `RETRIEVAL_BACKEND` — `store` (OpenAI Vector Store) or `local` (the in-process snapshot; falls back to the store when the snapshot is missing or the embedding call fails).
 - `RAG_SNAPSHOT_PATH` — where the local backend looks for the corpus snapshot (default `/data/snapshot/corpus.npz`).
 - `SNAPSHOT_MAX_AGE_DAYS` — how old a snapshot may get before every load warns (default 7; a warning, never a refusal).
@@ -75,6 +77,11 @@ guarantee: a query whose best chunks all belong to a neighbour returns fewer.
 
 ## Event logging (`retrieve_docs`)
 Every `lsfusion_retrieve_docs` call emits one structured JSON line (best-effort — a logging failure never breaks the tool). Envelope `{schema_version, event, ts (ISO-8601 UTC ms), server_version, ok}` plus `{query (capped), type, n_requested, n_results, top_score = max(results[].score), latency_ms, results:[{rank, source, file_id, filename, score}]}` — no chunk text; `error_class`/`error_message` on failure. Written to **stderr** (keeps the STDIO transport's stdout protocol channel clean; Docker's `json-file` captures stderr anyway), and additionally to a dated file when `LOG_DIR` is set. See `MCP-FEEDBACK-PLAN.md`.
+
+## Feedback reports
+Each report `lsfusion_report_feedback` records becomes one file, `<REPORTS_DIR>/inbox/<UTC YYYYMMDDTHHMMSS>-<report_id>.json` (e.g. `20261119T101500-rpt_3f9c2a71d04e8b65.json`), so the names sort by time. The file holds the redacted report plus `report_id`, `ts`, `schema_version`, `server_version`, `dedup_fingerprint`, and `client` / `client_version` from the MCP handshake when the client gave them. It is written as `.<name>.tmp` in the same folder and renamed into place, so a reader that takes `*.json` never sees half a report. A separate worker, not part of this repo, turns each file into an issue in `lsfusion/platform-feedback` and moves it out of the inbox.
+
+The `reports` event stream carries no report content: a stored report logs one `report_stored` line with `report_id`, `signal_type` and `payload_size`, and a refused one logs `report_feedback` with `ok: false` and its `reason`. Full `report_feedback` records with `ok: true` are what schema v4 and earlier wrote, before reports moved to files.
 
 ## Docker
 

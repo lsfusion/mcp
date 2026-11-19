@@ -172,7 +172,13 @@ SNAPSHOT_MAX_AGE_DAYS = float(os.environ.get("SNAPSHOT_MAX_AGE_DAYS", "7"))
 # carry several queries — `query` is then a JOIN of them rather than anything a
 # caller typed, and `queries` / `query_stats` / `results[].query_index` carry
 # what actually happened. Group analytics by `queries`, never by the join.
-LOG_SCHEMA_VERSION = 4
+# v5: a recorded report no longer goes into the `reports` stream. It is stored
+# as its own file (which carries this version too), and the stream gets a
+# contentless `report_stored` line instead of the full `report_feedback`
+# record; the report's `agent` field now asks for the model as well. So a
+# full report in the stream is v4 or earlier, and an old report carried over
+# into a file keeps the version it was logged with.
+LOG_SCHEMA_VERSION = 5
 # Stamped into every event so a record can be traced to the code that wrote
 # it. The image carries the commit it was built from as MCP_BUILD_SHA (CI
 # passes github.sha), and that wins: MCP_SERVER_VERSION was set by hand in the
@@ -202,3 +208,17 @@ REPORT_MAX_QUERIES = int(os.environ.get("REPORT_MAX_QUERIES", "50"))
 REPORT_CODE_EXCERPT_MAX_CHARS = int(os.environ.get("REPORT_CODE_EXCERPT_MAX_CHARS", "2000"))
 # Total serialized payload cap.
 REPORT_MAX_TOTAL_CHARS = int(os.environ.get("REPORT_MAX_TOTAL_CHARS", "65536"))
+# Where each recorded report is stored: one JSON file per report in
+# <REPORTS_DIR>/inbox/. A separate worker turns every file into an issue in
+# lsfusion/platform-feedback and moves it out of the inbox. Defaults to
+# <LOG_DIR>/reports, so a deployment that already mounts LOG_DIR keeps its
+# reports there without a new mount. Empty (neither set) => there is nowhere to
+# keep a report, and the tool refuses it rather than claim it was recorded.
+def _reports_dir(env=os.environ) -> str:
+    if env.get("REPORTS_DIR"):
+        return env["REPORTS_DIR"]
+    log_dir = env.get("LOG_DIR", "")
+    return os.path.join(log_dir, "reports") if log_dir else ""
+
+
+REPORTS_DIR = _reports_dir()
