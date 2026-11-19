@@ -65,7 +65,7 @@ guarantee: a query whose best chunks all belong to a neighbour returns fewer.
 - `OPENAI_API_KEY` — OpenAI API key (required).
 - `RAG_VECTOR_STORE_ID` — OpenAI Vector Store id that `lsfusion_retrieve_docs` searches against (required). Must match the store populated by the `ragIngestDocs` Jenkins pipeline.
 - `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`).
-- `MCP_BUILD_SHA` / `MCP_SERVER_VERSION` — the build identifier stamped into every event log line as `server_version`. The image carries the git commit it was built from as `MCP_BUILD_SHA` (CI passes `github.sha`), and that wins; `MCP_SERVER_VERSION` is only the fallback for a build without it (default `unknown`).
+- `MCP_BUILD_SHA` — the build identifier stamped into every event log line and report as `server_version`: the git commit the image was built from (CI passes `github.sha` as the `GIT_SHA` build arg). A build without it says `unknown`.
 - `LOG_DIR` — directory for dated JSONL event files. Empty (default) ⇒ event logs go to **stderr only**. Set it to a writable (uid 10001) bind-mount to also append `<stream>-YYYYMMDD.jsonl` (`retrieval`, `reports`; Phase A2). It is also the default parent of `REPORTS_DIR`.
 - `REPORTS_DIR` — where `lsfusion_report_feedback` stores reports, one file each in `<REPORTS_DIR>/inbox/`. Default `<LOG_DIR>/reports`, so the `LOG_DIR` bind mount holds them; empty when neither is set, and then every report is refused.
 - `FEEDBACK_ENABLED` — `0` turns `lsfusion_report_feedback` off (it answers `disabled` and stores nothing). Default on.
