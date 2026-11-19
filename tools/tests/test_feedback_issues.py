@@ -139,6 +139,15 @@ def test_title_cuts_a_long_summary_at_a_word():
     assert title[:-1].endswith("word") and "\n" not in title and "  " not in title
 
 
+def test_title_leaves_leading_tags_to_the_body():
+    summary = "[CONVEYOR][S3] [CAN BE SIMPLER WITH PLATFORM] Status captions written as CASE"
+    rec = _record(problem_summary=summary)
+    assert fi.render_title(rec) == "Status captions written as CASE"
+    assert fi._unlink(summary) in fi.render_body(rec, "n")
+    assert fi.render_title(_record(problem_summary="[S2] [tags only]")) == "[S2] [tags only]"
+    assert fi.render_title(_record(problem_summary="Use x[1] in y")) == "Use x[1] in y"
+
+
 def test_title_breaks_mentions_and_references():
     title = fi.render_title(_record(problem_summary="@someone see #12 and https://x.org"))
     assert title == f"@{ZWSP}someone see #{ZWSP}12 and https:{ZWSP}//x.org"

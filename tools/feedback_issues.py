@@ -86,6 +86,7 @@ _MARKER = "<!-- report_id: {} -->"
 _MARKER_RE = re.compile(r"<!-- report_id: (rpt_[A-Za-z0-9_]+) -->\s*\Z")
 _REPORT_ID = re.compile(r"rpt_[A-Za-z0-9_]+")
 _NAME = re.compile(r"(\d{8}T\d{6})-rpt_[A-Za-z0-9_]+\.json")
+_TITLE_TAGS = re.compile(r"(?:\[[^\[\]]{1,40}\]\s*)+")
 
 
 # --- making agent text safe to post ------------------------------------------
@@ -177,10 +178,15 @@ def _cut(s: str, limit: int | None) -> str:
 # --- rendering ---------------------------------------------------------------
 
 def render_title(rec: dict) -> str:
-    """The start of problem_summary, cut at a word. Titles show no HTML, so
-    only pings and references need breaking."""
-    title = _cut(" ".join(_clean(rec.get("problem_summary")).split()), TITLE_MAX)
-    return _unlink(title) or f"Feedback report {rec['report_id']}"
+    """The start of problem_summary, cut at a word. Leading tags such as
+    `[CONVEYOR][S3]` are left to the body, where the summary is whole: in a
+    title they would take half the room. Titles show no HTML, so only pings
+    and references need breaking."""
+    summary = " ".join(_clean(rec.get("problem_summary")).split())
+    tags = _TITLE_TAGS.match(summary)
+    if tags and tags.end() < len(summary):
+        summary = summary[tags.end():]
+    return _unlink(_cut(summary, TITLE_MAX)) or f"Feedback report {rec['report_id']}"
 
 
 def _who(rec: dict) -> str:
