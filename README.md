@@ -89,7 +89,7 @@ python -m tools.feedback_issues --dry-run --reports-dir DIR [--out PREVIEW_DIR] 
 ```
 
 - **Issue:** the title is the start of `problem_summary` (about 100 characters, cut at a word), without leading tags such as `[CONVEYOR][S3]`; the body keeps them. The body has short sections (problem, expected vs actual, suggested change, eval errors, outcome, who reported it), the full record in a collapsed JSON block, and ends with `<!-- report_id: rpt_… -->`. Agent text cannot ping or link: mentions, `#123` references, URLs and link brackets get a zero-width space, and HTML is escaped outside code. Over GitHub's size limit the JSON block is cut first.
-- **Labels:** two per issue, `area:docs|platform|search` and `target:<primary_target>`. The worker creates any of its 11 labels that are missing, each with a description, and never changes other labels.
+- **Labels:** three per issue: `raw` (an agent's report as received — primary data, kept unedited; the work it leads to goes into issues of its own), `area:docs|platform|search` and `target:<primary_target>`. The worker creates any of its 12 labels that are missing, each with a description, and never changes other labels.
 - **No duplicates:** before posting, it lists the repo's issues created since the oldest pending report (the issues list, not search, so it is never stale) and only moves a file whose issue already carries its marker. Runs must not overlap.
 - **Limits:** writes are 2 s apart. On a rate-limit answer (403/429) it stops and leaves the rest for the next run. It prints `posted N, skipped N, failed N, left N` and exits 1 if anything failed, 2 if there is no token.
 

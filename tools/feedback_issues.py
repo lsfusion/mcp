@@ -64,9 +64,14 @@ AREAS = {
     "rag-retrieval": "search",
 }
 
+# Every issue the worker opens carries it: an agent's report as received,
+# primary data that stays unedited. The work it leads to gets issues of its own.
+RAW = "raw"
+
 # The worker's labels, created when missing. Agents read the descriptions with
 # `gh label list`, so each one says what the label means.
 LABELS = {
+    RAW: ("ededed", "An agent's feedback report as received: primary data, kept unedited"),
     "area:docs": ("1d76db", "Fix belongs in the docs: language reference, how-to, paradigm, rules or brief"),
     "area:platform": ("b60205", "Fix belongs in the platform: a code bug or an unclear eval error message"),
     "area:search": ("5319e7", "Fix belongs in doc search: retrieve_docs found the wrong articles or none"),
@@ -292,7 +297,7 @@ def render_body(rec: dict, name: str) -> str:
 
 def labels_for(rec: dict) -> list[str]:
     target = rec["recommendation"]["primary_target"]
-    return [f"area:{AREAS[target]}", f"target:{target}"]
+    return [RAW, f"area:{AREAS[target]}", f"target:{target}"]
 
 
 def render_issue(rec: dict, name: str) -> dict:

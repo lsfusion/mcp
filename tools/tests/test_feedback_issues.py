@@ -11,7 +11,7 @@ import urllib.parse
 import pytest
 
 import tools.feedback_issues as fi
-from tools.feedback_issues import API, AREAS, BODY_MAX, LABELS, ZWSP
+from tools.feedback_issues import API, AREAS, BODY_MAX, LABELS, RAW, ZWSP
 
 REPO = "lsfusion/platform-feedback"
 
@@ -293,15 +293,15 @@ def test_even_sections_too_long_for_github_fit():
 # --- labels --------------------------------------------------------------------
 
 @pytest.mark.parametrize("target", sorted(AREAS))
-def test_each_issue_gets_an_area_and_its_target(target):
+def test_each_issue_is_raw_and_gets_an_area_and_its_target(target):
     labels = fi.labels_for(_record(recommendation={"primary_target": target, "suggested_change": "s"}))
-    assert labels == [f"area:{AREAS[target]}", f"target:{target}"]
+    assert labels == ["raw", f"area:{AREAS[target]}", f"target:{target}"]
     assert set(labels) <= set(LABELS)
 
 
-def test_the_eleven_labels_each_have_a_short_description():
-    expected = {f"area:{a}" for a in AREAS.values()} | {f"target:{t}" for t in AREAS}
-    assert set(LABELS) == expected and len(LABELS) == 11
+def test_the_twelve_labels_each_have_a_short_description():
+    expected = {RAW} | {f"area:{a}" for a in AREAS.values()} | {f"target:{t}" for t in AREAS}
+    assert set(LABELS) == expected and len(LABELS) == 12
     for color, description in LABELS.values():
         assert re.fullmatch(r"[0-9a-f]{6}", color) and 0 < len(description) <= 100
 
@@ -326,7 +326,7 @@ def test_posts_oldest_first_and_files_each_report_as_processed(reports):
     assert _main(reports, gh) == 0
     posted = gh.posted()
     assert [p["title"] for p in posted] == ["first", "second"]
-    assert posted[0]["labels"] == ["area:platform", "target:code-bug"]
+    assert posted[0]["labels"] == ["raw", "area:platform", "target:code-bug"]
     assert _inbox(reports) == []
     rec = _processed(reports, first)
     assert rec["issue_number"] == 1 and rec["issue_url"].endswith("/issues/1")
@@ -510,7 +510,7 @@ def test_dry_run_needs_no_token_and_no_network(reports, tmp_path, capsys):
     assert fi.main(["--dry-run", "--reports-dir", str(reports), "--out", str(out_dir)],
                    stdin=NoStdin(), transport=no_network) == 0
     preview = (out_dir / name.replace(".json", ".md")).read_text(encoding="utf-8")
-    assert preview.startswith("# see &lt;module&gt;\n\nLabels: `area:docs` `target:how-to`\n\n### Problem")
+    assert preview.startswith("# see &lt;module&gt;\n\nLabels: `raw` `area:docs` `target:how-to`\n\n### Problem")
     assert _inbox(reports) == [name]  # nothing moved
     assert fi.main(["--dry-run", "--reports-dir", str(reports)], stdin=NoStdin(), transport=no_network) == 0
     assert "=== " + name in capsys.readouterr().out
