@@ -172,8 +172,8 @@ def test_body_has_the_sections_in_order_and_ends_with_the_marker():
              "### Eval errors", "**semantic** · Unknown property foo",
              "```\nx = GROUP SUM foo(o);\n```",
              "**Outcome:** workaround · **Signal:** doc-gap",
-             "Reported by claude-code, claude-opus-4-5 via claude-code 2.1.327 · lsFusion 6.1"
-             " · MCP server `64e52fa`",
+             "Reported by claude-code, claude-opus-4-5 via claude-code 2.1.327"
+             " on 2026-11-19 08:42 UTC · lsFusion 6.1 · MCP server `64e52fa`",
              "<details>", "</details>"]
     positions = [body.index(part) for part in order]
     assert positions == sorted(positions)
@@ -187,8 +187,10 @@ def test_body_leaves_out_what_the_report_lacks():
     body = fi.render_body(rec, _name(1, rec["report_id"]))
     assert "### Expected vs actual" not in body and "### Eval errors" not in body
     assert "**Why:**" not in body and "**Also:**" not in body
-    assert "Reported" not in body and "lsFusion" not in body
-    assert "MCP server `64e52fa`" in body
+    assert "Reported by" not in body and " via " not in body and "lsFusion" not in body
+    assert "Reported on 2026-11-19 08:42 UTC · MCP server `64e52fa`" in body
+    rec.pop("ts")
+    assert "Reported" not in fi.render_body(rec, _name(1, rec["report_id"]))
 
 
 def test_json_block_holds_the_record_verbatim():

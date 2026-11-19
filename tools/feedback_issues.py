@@ -198,6 +198,11 @@ def _who(rec: dict) -> str:
         reported += f" by {flat('agent')}"
     if flat("client"):
         reported += f" via {' '.join(filter(None, (flat('client'), flat('client_version'))))}"
+    # When the server received it: the issue's own date is when the worker ran,
+    # an hour later at most for a live report, months for one carried over.
+    when = re.match(r"(\d{4}-\d\d-\d\d)T(\d\d:\d\d)", flat("ts"))
+    if when:
+        reported += f" on {when[1]} {when[2]} UTC"
     parts = [reported] if reported != "Reported" else []
     if flat("lsfusion_version"):
         parts.append(f"lsFusion {flat('lsfusion_version')}")
