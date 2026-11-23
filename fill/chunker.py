@@ -1,4 +1,4 @@
-"""Markdown → list[Section] for OpenAI Vector Store upload.
+"""Markdown → list[Section] for the corpus snapshot.
 
 Implements RAG-PLAN.md §"Chunking algorithm":
 
@@ -11,19 +11,13 @@ Implements RAG-PLAN.md §"Chunking algorithm":
   - Oversized parts are passed through a token-aware recursive splitter and
     become `{section_id}::part-NN` sub-sections (overlap preserved).
   - Deterministic prefix `# {sourceType}: {heading_path}\n\n{content}` is
-    prepended; the full payload is uploaded under an explicitly requested
-    chunking_strategy of static `max_chunk_size_tokens=4096`,
-    `chunk_overlap_tokens=0`.
+    prepended; the full payload is what gets embedded.
   - section_payload_hash = sha256(JSON{content, sourceType, heading_path,
     chunker_version, glossary_version, prefix_version, source_url_version}).
 
-One-section-one-chunk invariant: with MAX_SECTION_TOKENS=2000 locally, the
-secondary splitter guarantees each Section's payload fits inside one OpenAI
-chunk of 4096 tokens. That 4096 limit is not assumed — it is explicitly
-requested at attach time via `fill.real_openai_client._CHUNKING_STRATEGY`
-(with zero overlap); omitting it would make OpenAI fall back to its `auto`
-default of 800-token chunks with 400-token overlap, which would re-split
-every section and defeat the invariant.
+One-section-one-vector invariant: with MAX_SECTION_TOKENS=2000 locally, the
+secondary splitter keeps each Section's payload within OPENAI_CHUNK_LIMIT
+(4096 tokens), so every section is embedded whole as one vector.
 Test: test_invariant_no_payload_exceeds_safe_limit.
 """
 
@@ -72,8 +66,9 @@ INDEXED_TYPES: frozenset[str] = SOURCE_TYPES - {"brief", "rules"}
 # ───────────────────────────── tuning constants ──────────────────────────────
 
 # Local cap measured with tiktoken's cl100k_base. The actual embedder may use
-# a different tokenizer (e.g., o200k_base) — the OpenAI-side limit (4096) gives
-# a ~2x safety buffer to absorb tokenizer disagreement.
+# a different tokenizer (e.g., o200k_base) — the hard cap OPENAI_CHUNK_LIMIT
+# (4096, well inside the embeddings input limit) gives a ~2x safety buffer to
+# absorb tokenizer disagreement.
 #
 # MAX_SECTION_TOKENS is a soft TARGET: secondary-split aims for sub-payloads
 # in this range, but with pathologically long heading paths (>1900 tokens of
@@ -144,8 +139,9 @@ class Section:
     """One indexable unit. After secondary-split, distinct objects may share
     a parent section_id but have differing `::part-NN` suffixes.
 
-    `raw_content` excludes the prefix; full upload payload is `payload`.
-    `section_payload_hash` is the primary reindex signal (see plan).
+    `raw_content` excludes the prefix; the embedded payload is `payload`.
+    `section_payload_hash` fingerprints a section and the versions that shaped
+    it; the snapshot build does not read it.
     """
 
     slug: str
@@ -159,18 +155,14 @@ class Section:
     # would search for that the title does not use ("validation" for an
     # article titled "constraints"). Empty for an article that declares none,
     # and an empty one changes NOTHING: the payload and the hash stay
-    # byte-identical to what they were before keywords existed, so adding the
-    # field costs no re-index of the articles that do not use it.
+    # byte-identical to what they were before keywords existed.
     keywords: str = ""
 
     @property
     def prefix(self) -> str:
-        # Carried in the PAYLOAD, not only in an attribute: the store's own
-        # ranking is visibly pulled by shared words — asked to "forbid saving
-        # invalid data" it answered with a chunk holding `data` five times over
-        # the constraints article, which uses none of the query's words — so a
-        # keyword only the local rerank could see would leave the semantic leg
-        # exactly as blind as it is today.
+        # Carried in the PAYLOAD, not only in an attribute: the vector is
+        # computed from the payload and the search ranks by vectors alone, so a
+        # keyword kept only in an attribute would be invisible to it.
         keywords = f"keywords: {self.keywords}\n" if self.keywords else ""
         return f"# {self.source_type}: {self.heading_path}\n{keywords}\n"
 
@@ -193,7 +185,7 @@ class Section:
                     "sourceType": self.source_type,
                     "heading_path": self.heading_path,
                     # Only when non-empty, so every article that declares no
-                    # keywords keeps the hash it already has in the store.
+                    # keywords keeps the hash it had before keywords existed.
                     **({"keywords": self.keywords} if self.keywords else {}),
                     "chunker_version": CHUNKER_VERSION,
                     "glossary_version": GLOSSARY_VERSION,
@@ -223,9 +215,9 @@ def _keywords(value) -> str:
     to look. A plain string is accepted too, split on commas, because that is
     how a human writes one by hand.
 
-    The result is capped: it rides in a vector-store attribute, where values
-    are bounded, and a keyword list long enough to hit the cap has stopped
-    being a list of keywords."""
+    The result is capped: it is prepended to every chunk of the article, and a
+    keyword list long enough to hit the cap has stopped being a list of
+    keywords."""
     if isinstance(value, str):
         items = [p.strip() for p in value.split(",")]
     elif isinstance(value, (list, tuple)):
@@ -535,19 +527,14 @@ def _merge_short_siblings(
     requirements.txt — otherwise a tokenizer drift across the 50- or
     256-token boundary could shift merge decisions.
 
-    Incrementality (file-level, NOT section-level): unchanged files
-    produce unchanged Section lists → unchanged hashes. Within a single
-    file, edits to one section can shift merge boundaries and re-hash
-    unchanged sibling sections — e.g. a Description growing past the
-    soft cap will release a merged Syntax back to standalone. This
-    same-file ripple is inherent to ANY merge strategy (and already
-    present elsewhere: editing the H1 title or bumping PREFIX_VERSION
-    re-hashes every section of the file). The ingest fast-path is
-    file_hash-gated, so any in-file content change already triggers a
-    full re-chunk of that file. Cross-file locality is preserved.
+    Locality: unchanged files produce unchanged Section lists. Within a
+    file, an edit to one section can shift merge boundaries of its
+    siblings — e.g. a Description growing past the soft cap releases a
+    merged Syntax back to standalone. Inherent to ANY merge strategy.
 
-    Reversibility: bumping `CHUNKER_VERSION` is the safety net for any
-    behavior shift here — it forces a forced-full-scan on next ingest.
+    Every snapshot build re-chunks and re-embeds the whole corpus, so a
+    change here takes effect on the next build. Bump `CHUNKER_VERSION`
+    with it: the snapshot manifest records which chunker shaped it.
     """
     if not sections:
         return sections

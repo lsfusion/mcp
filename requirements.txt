@@ -1,6 +1,6 @@
 mcp[cli]>=1.6.0,<2.0.0
 fastmcp>=2.0.0,<3.0.0
-openai>=1.50.0  # vector_stores.search (retrieve_docs_tool)
+openai>=1.50.0  # embeddings (query in rag_retrieve, chunks in rag_build_snapshot)
 
 # fill.* runtime deps. Token counts and header-split heuristics are
 # inputs to section_payload_hash AND to _merge_short_siblings' floor/cap

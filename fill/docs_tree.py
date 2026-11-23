@@ -4,12 +4,7 @@ The layout is `docs/<type>/en/<stem>.md`, and the type FOLDER is the single
 source of truth: there is no manifest, and a path that does not fit the shape
 raises rather than being guessed at.
 
-This lives apart from any one caller because the snapshot builder and the
-ingest driver both need it, and the second is on its way out. Keeping the
-layout rules here means the builder does not import from a module that is
-being deleted around it — which is the way this deletion would otherwise go
-wrong: request-time tests stay green against a snapshot that already exists,
-and the next rebuild is the thing that fails.
+The snapshot builder is its only caller.
 """
 from __future__ import annotations
 
@@ -23,7 +18,7 @@ DOCS_SUBDIR = Path("docs")
 
 
 def all_docs(docs_root: Path) -> list[Path]:
-    # Type-first: ingest the English slice docs/<type>/en/*.md only. `docs/images`
+    # Type-first: index the English slice docs/<type>/en/*.md only. `docs/images`
     # and `docs/<type>/AGENTS.md` are skipped (neither sits under <type>/en).
     out: list[Path] = []
     for t in sorted(INDEXED_TYPES):
@@ -43,13 +38,14 @@ def make_lookups(docs_root: Path) -> tuple[
       - source_type_for → the type folder (`language`/`paradigm`/…)
       - slug_for        → the filename stem
       - source_file_for → the logical key "<type>/<stem>.md" (language segment
-        dropped, so the key is stable across the en/ru<->type/lang move and the
-        vector store sees no change)
-      - path_for_key    → inverse of source_file_for (used to re-find stale files)
+        dropped)
+      - path_for_key    → inverse of source_file_for
+
+    The snapshot build uses only the first two; nothing calls the last two any
+    more.
 
     The type folder is the single source of truth (no manifest). A path that is
-    not docs/<type>/en/<file>.md raises — surfacing as a per-file setup error in
-    `fill.ingest`, never aborting the whole run.
+    not docs/<type>/en/<file>.md raises.
     """
     def slug_for(path: Path) -> str:
         return path.stem

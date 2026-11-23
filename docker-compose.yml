@@ -10,13 +10,16 @@ services:
 
     environment:
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      RAG_VECTOR_STORE_ID: ${RAG_VECTOR_STORE_ID}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-large}
-      MCP_HOST: ${MCP_HOST:-0.0.0.0}
       MCP_PORT: ${MCP_PORT:-8000}
       # get_guidance proxies these published Markdown twins (llms-txt plugin output).
       GUIDANCE_BRIEF_URL: ${GUIDANCE_BRIEF_URL:-https://docs.lsfusion.org/Brief.md}
       GUIDANCE_RULES_URL: ${GUIDANCE_RULES_URL:-https://docs.lsfusion.org/Rules.md}
+
+    # retrieve_docs searches the corpus snapshot built by tools/rag_build_snapshot.py
+    # (default RAG_SNAPSHOT_PATH is /data/snapshot/corpus.npz).
+    volumes:
+      - ./snapshot:/data/snapshot:ro
 
     ports:
       - "8000:8000"

@@ -1,7 +1,7 @@
-"""Pipeline-version constants used in section_payload_hash + state.pipeline_versions.
+"""Pipeline-version constants used in section_payload_hash.
 
-Bumping any of these triggers a full reindex via Step-0 version-drift detection
-(see RAG-PLAN.md §"Step 0"). Bumps are intentional — pin tests in `tests/`
+The snapshot manifest records the chunker, glossary and prefix versions, so a
+snapshot says what shaped it. Bumps are intentional — pin tests in `tests/`
 prevent accidental edits.
 
 `SOURCE_URL_VERSION` lives in `fill.config` because it travels with the URL
@@ -32,7 +32,7 @@ from fill.config import SOURCE_URL_VERSION  # re-exported, do not edit here
 CHUNKER_VERSION: str = "v4"
 
 # Reserved for future glossary preprocessing (DSL term aliasing, synonym
-# injection). Placeholder until ingest needs it.
+# injection). Placeholder until the chunker needs it.
 GLOSSARY_VERSION: str = "v0"
 
 # Bump when the deterministic section prefix shape changes
@@ -41,8 +41,7 @@ PREFIX_VERSION: str = "v1"
 
 
 def pipeline_versions() -> dict[str, str]:
-    """Return the full version tuple as a dict, matching the shape persisted
-    in `platform/.rag/openai-state.json::pipeline_versions`."""
+    """Return the full version tuple as a dict."""
     return {
         "chunker_version": CHUNKER_VERSION,
         "glossary_version": GLOSSARY_VERSION,

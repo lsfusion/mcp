@@ -1,11 +1,9 @@
 """fill.snapshot — the corpus the server searches, as one file.
 
-WHY A FILE AT ALL. Today the vector store holds the text and its vector
-together, so they cannot disagree. Searching locally splits them: the vector we
-rank by and the text we hand the assistant are built by one job and read by
-another process. Everything here exists to keep those two from drifting —
-one artifact, one manifest, atomic publish, and a load that refuses anything it
-does not recognize.
+WHY A FILE AT ALL. The vector we rank by and the text we hand the assistant
+are built by one job and read by another process. Everything here exists to
+keep those two from drifting — one artifact, one manifest, atomic publish, and
+a load that refuses anything it does not recognize.
 
 WHAT IS IN IT. Per chunk: the payload the embedding was computed FROM (so the
 two can be checked against each other), the attributes retrieve_docs returns,

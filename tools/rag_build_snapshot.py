@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Build the corpus snapshot the server searches locally.
 
-Runs in the same job that indexes the docs (`ragIngestDocs`), from the same
-`Section` objects, so the snapshot and the vector store describe one corpus
-revision. Embeds every chunk's payload — the SAME bytes the store was given —
-and writes one atomic file (see fill/snapshot.py for what is in it and why).
+Runs in the `ragBuildSnapshot` Jenkins step after each platform master commit.
+Embeds every chunk's payload and writes one atomic file (see fill/snapshot.py
+for what is in it and why).
 
     python3 tools/rag_build_snapshot.py --platform-root <repo> --out <file.npz>
 
@@ -72,9 +71,8 @@ def build(platform_root: Path, out: Path, client: OpenAI,
                 "heading_path": sec.heading_path,
                 "keywords": sec.keywords,
                 "source_url": sec.source_url,
-                # The payload, not the raw content: the prefix and keywords are
-                # part of what the store embedded, so they must be part of what
-                # we embed too, or the two indexes answer differently.
+                # The payload, not the raw content: the prefix and keywords
+                # must be in the vector, or the search cannot see them.
                 "text": sec.payload,
             })
     if not rows:

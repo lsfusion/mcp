@@ -2,14 +2,13 @@
 
 Single source of truth for `DOCS_BASE_URL` and the `build_source_url(slug)`
 function. Consumed by:
-  - `fill.ingest` to compute the `source_url` per-section attribute on upload.
+  - `fill.chunker` to compute the `source_url` per-section attribute.
   - `mcp.tools.rag_retrieve` (indirectly, via the attribute) for citation links
     returned to the agent.
 
 `SOURCE_URL_VERSION` participates in `section_payload_hash` (see plan §
-"Chunking algorithm") so a change to `DOCS_BASE_URL` or `build_source_url`
-behavior automatically forces a full reindex via Step-0 version-drift
-detection. **Bump the version constant when changing the URL contract.**
+"Chunking algorithm"). **Bump the version constant when changing the URL
+contract.**
 """
 
 from __future__ import annotations
@@ -25,8 +24,7 @@ SLUG_RE = re.compile(r"^[A-Za-z0-9_\-=.]+$")
 # carried by other identity attributes (see plan §"Attribute length validation").
 SLUG_MAX_LEN = 256
 
-# Length cap on an article's joined `keywords` — it rides in a vector-store
-# attribute (values are length-bounded there) and is prepended to every chunk
+# Length cap on an article's joined `keywords` — it is prepended to every chunk
 # of the article, so it is paid for once per chunk. A list long enough to hit
 # this has stopped being a list of keywords.
 KEYWORDS_MAX_LEN = 256
@@ -42,8 +40,7 @@ KEYWORDS_MAX_LEN = 256
 # for browsers, irrelevant for the LLM agent that consumes the URL).
 DOCS_BASE_URL: str = "https://docs.lsfusion.org/"
 
-# Bump when DOCS_BASE_URL or build_source_url logic changes — triggers full
-# reindex via state.pipeline_versions drift detection (see plan).
+# Bump when DOCS_BASE_URL or build_source_url logic changes.
 SOURCE_URL_VERSION: str = "v1"
 
 

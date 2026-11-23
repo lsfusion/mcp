@@ -7,11 +7,10 @@ index structure — every chunk is compared, every time. What that buys over an
 approximate index is that the answer cannot depend on how the neighbourhood
 graph happened to be built.
 
-The snapshot is loaded once, lazily, and held. A failure to load is not fatal:
-`get()` returns None and the caller falls back to the vector store, which is
-what this server did before the snapshot existed. Load failures are logged
-loudly BUT ONLY ONCE — a broken artifact should be visible in the log, not
-repeated on every request.
+The snapshot is loaded once, lazily, and held. A failure to load does not take
+the server down: `get()` returns None and retrieve_docs answers with an error
+instead of an empty result. Load failures are logged loudly BUT ONLY ONCE — a
+broken artifact should be visible in the log, not repeated on every request.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ def get() -> Snapshot | None:
     """The loaded snapshot, or None if there isn't a usable one. Safe to call
     from several threads.
 
-    A new snapshot is picked up WITHOUT a restart: the ingest job publishes one
+    A new snapshot is picked up WITHOUT a restart: the snapshot job publishes one
     on every docs change (2-3 days a week), and restarting the server for each
     would drop every connected MCP session. So each call stats the file — one
     syscall — and reloads when it has been replaced. A reload that fails keeps
@@ -71,7 +70,7 @@ def get() -> Snapshot | None:
         _tried = True
         if stamp is None:
             if _snapshot is None:
-                log.info("no snapshot at %s — retrieval will use the vector store",
+                log.info("no snapshot at %s — retrieval is unavailable",
                          SNAPSHOT_PATH)
             else:
                 log.warning("snapshot %s has disappeared — keeping the one already "
@@ -83,7 +82,7 @@ def get() -> Snapshot | None:
         except Exception as e:  # noqa: BLE001 — a bad artifact must not take the server down
             log.error("snapshot %s refused (%s) — %s", path, e,
                       "keeping the one already loaded" if _snapshot is not None
-                      else "retrieval falls back to the vector store")
+                      else "retrieval is unavailable")
             # Remember the stamp anyway, or every single call re-reads 23 MB
             # just to fail again on the same bad file.
             _stamp = stamp

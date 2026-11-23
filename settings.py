@@ -4,29 +4,25 @@ import os
 # === Environment variables ===
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
-# The model every chunk AND every query is embedded with when the local index
-# serves retrieval. Both sides must use the same one — a snapshot built by
-# another model is refused at load, because mixing them does not fail loudly,
-# it just returns nonsense. (The vector store embeds server-side and ignores
-# this.)
+# The model every chunk AND every query is embedded with. Both sides must use
+# the same one — a snapshot built by another model is refused at load, because
+# mixing them does not fail loudly, it just returns nonsense.
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 EMBEDDING_DIMENSIONS = int(os.environ.get("EMBEDDING_DIMENSIONS", "3072"))
 
-# Attribute key under which sourceType is stored on each VS file
-# (chunker writes the bare category value "language" / "paradigm" / "how-to" /
-# "brief" / "rules" — the folder name, no combined-form prefix; see
-# fill/ingest.py:_section_attributes).
+# Attribute key under which sourceType is stored on each chunk (chunker writes
+# the bare category value "language" / "paradigm" / "how-to" / "brief" /
+# "rules" — the folder name, no combined-form prefix).
 SOURCETYPE = "sourceType"
 
-# Attribute key under which the article slug is stored on each VS file (the
-# article's published slug, e.g. "Brief" / "Rules_export"; see
-# fill/ingest.py:_section_attributes).
+# Attribute key under which the article slug is stored on each chunk (the
+# article's published slug, e.g. "Brief" / "Rules_export").
 SLUG = "slug"
 
 
 
 # Bare category values (the docs/<lang> folder names) exposed by the chunker on
-# VS file attributes.
+# chunk attributes.
 SOURCETYPE_DOCUMENTATION = "documentation"
 SOURCETYPE_DOCUMENTATION_PARADIGM = "paradigm"
 SOURCETYPE_DOCUMENTATION_LANGUAGE = "language"
@@ -148,14 +144,9 @@ SECTIONS_MAX_CHARS = max(0, int(os.environ.get("SECTIONS_MAX_CHARS", "1500")))
 BATCH_MAX_QUERIES = max(1, int(os.environ.get("BATCH_MAX_QUERIES", "16")))
 
 # === Local dense index (fill/snapshot.py, tools/local_index.py) ===
-# Where the server looks for the snapshot. Empty (or a missing file) => the
-# local index is simply not used and retrieval goes to the vector store, which
-# is the behaviour this server has always had.
+# Where the server looks for the snapshot — the only thing retrieve_docs
+# searches. Empty (or a missing file) => retrieve_docs answers with an error.
 SNAPSHOT_PATH = os.environ.get("RAG_SNAPSHOT_PATH", "/data/snapshot/corpus.npz")
-
-# Which backend serves retrieve_docs: "store" (OpenAI Vector Store, the way it
-# has always worked) or "local" (the snapshot). Canary switch — the code ships
-# first and defaults to the old path; flipping this env var is the rollout, and
 
 # How old a snapshot may get before every load says so. A stale index does not
 # fail — it answers from documentation that has moved on — so age is WARNED

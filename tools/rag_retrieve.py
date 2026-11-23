@@ -71,8 +71,8 @@ class _Hit:
     `DocItem.id` and accepted back in `exclude_ids`.
     `source` is the combined "documentation-<type>" branch label returned to
     consumers; the section id in `id` is the only identity a chunk has, so
-    a later triage can compare the served result against the live store
-    (MCP-FEEDBACK-PLAN.md, Phase A). They are NOT exposed in the tool response.
+    a later triage can look the served chunk up in the snapshot
+    (MCP-FEEDBACK-PLAN.md, Phase A).
     """
     id: str
     source: str
@@ -230,13 +230,15 @@ def retrieve_docs_tool(
     takes a list: two queries cost 194 ms instead of 581, four cost 182 instead
     of 728.
 
-    A batch shares ONE budget (`BATCH_TOTAL_CAP`) rather than multiplying it, so
-    it never costs the caller MORE context than the separate calls it replaces,
-    and a chunk that answers two of the queries is returned once — credited to
-    the query it scored higher for. Each returned chunk says which query that
-    was. `per_query` is a ceiling, not a guaranteed share: a query whose best
-    chunks all belong to a neighbour returns fewer, which is the correct answer
-    to asking two versions of the same thing.
+    A batch (at most `BATCH_MAX_QUERIES` queries) shares ONE budget of
+    `RESULT_MAX_CHARS` characters rather than multiplying it, so it never costs
+    the caller MORE context than the separate calls it replaces, and a chunk
+    that answers two of the queries is returned once — credited to the query it
+    scored higher for. Each returned chunk says which query that was. The
+    budget is split evenly across (query x branch) cells and what a cell leaves
+    unused goes to the best remaining chunks. A query's share is a ceiling, not
+    a guarantee: a query whose best chunks all belong to a neighbour returns
+    fewer, which is the correct answer to asking two versions of the same thing.
 
     What a batch gives up is the loop: asking one thing, reading the answer, and
     letting it shape the next question. Batch what is known up front; keep
@@ -245,7 +247,9 @@ def retrieve_docs_tool(
     `type` filters by chunk sourceType (the docs folder) and applies to every
     query in the batch:
       * omitted / null — search all three reference branches (`language`,
-        `paradigm`, `how-to`) with a per-branch quota and merge results by score.
+        `paradigm`, `how-to`), each with its own share of the budget; drop
+        chunks more than `SCORE_FLOOR_GAP` below the query's best score; return
+        one list ranked by score.
       * one of `language` / `paradigm` / `how-to` — only that branch.
 
     The `brief` and `rules` branches are not searchable and are rejected here:
@@ -256,7 +260,7 @@ def retrieve_docs_tool(
     batch: pass back the ids already in context to page deeper instead of
     getting the same chunks again.
 
-    The store only holds English (`docs/en/`) content. Cross-lingual
+    The corpus holds only English (`docs/en/`) content. Cross-lingual
     embeddings make non-English queries work, but English wording is
     preferred for best recall.
     """
@@ -895,9 +899,9 @@ def _log_retrieval(
             # are different enough that mixing them in one rate would hide
             # both.
             "article": article,
-            # The MAX store score, not the first hit's: the list is ranked by
-            # score plus the title bonus, so the head of it need not be the
-            # best-scoring chunk. Gap analytics compare stores, not orders.
+            # The MAX score, not the first hit's (log schema v3). The list is
+            # ranked by score now, so the two agree, but the field keeps that
+            # meaning.
             "top_score": (max(h.score for h in hits) if hits else None),
             "latency_ms": int((time.monotonic() - start) * 1000),
             # Which client, never which model — see tools/caller.py.

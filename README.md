@@ -18,7 +18,7 @@ Transports:
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-export OPENAI_API_KEY=sk-... RAG_VECTOR_STORE_ID=vs_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+export OPENAI_API_KEY=sk-... RAG_SNAPSHOT_PATH=./corpus.npz  # built by tools/rag_build_snapshot.py
 
 # STDIO transport
 python server.py stdio
@@ -53,30 +53,32 @@ output is enabled.
 `query` accepts a list of distinct queries when the caller needs several
 independent things at once (on real traffic 85% of call bursts carry two or
 more topics). The batch is one embeddings round trip instead of several, and
-shares ONE budget (`BATCH_TOTAL_CAP`, at most `BATCH_MAX_QUERIES` queries)
-rather than multiplying it, so it never costs more context than the separate
-calls it replaces. `type` and `exclude_ids` apply to every query in the batch.
-A chunk answering two queries is returned once, credited to the query it
-scored higher for, and every chunk carries the `query` it is credited to
-(`null` when only one was submitted). The per-query share is a ceiling, not a
-guarantee: a query whose best chunks all belong to a neighbour returns fewer.
+shares ONE budget (`RESULT_MAX_CHARS` characters of text, at most
+`BATCH_MAX_QUERIES` queries) rather than multiplying it, so it never costs
+more context than the separate calls it replaces. `type` and `exclude_ids`
+apply to every query in the batch. A chunk answering two queries is returned
+once, credited to the query it scored higher for, and every chunk carries the
+`query` it is credited to (`null` when only one was submitted). The per-query
+share is a ceiling, not a guarantee: a query whose best chunks all belong to a
+neighbour returns fewer.
 
 ## Environment variables
-- `OPENAI_API_KEY` — OpenAI API key (required).
-- `RAG_VECTOR_STORE_ID` — OpenAI Vector Store id that `lsfusion_retrieve_docs` searches against (required). Must match the store populated by the `ragIngestDocs` Jenkins pipeline.
-- `EMBEDDING_MODEL` — OpenAI embedding model (default `text-embedding-3-large`).
+- `OPENAI_API_KEY` — OpenAI API key (required: `lsfusion_retrieve_docs` embeds each query with it).
+- `EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` — the model queries are embedded with and its vector size; both must match the snapshot, which is refused otherwise (default `text-embedding-3-large` / 3072).
 - `MCP_BUILD_SHA` — the build identifier stamped into every event log line and report as `server_version`: the git commit the image was built from (CI passes `github.sha` as the `GIT_SHA` build arg). A build without it says `unknown`.
 - `LOG_DIR` — directory for dated JSONL event files. Empty (default) ⇒ event logs go to **stderr only**. Set it to a writable (uid 10001) bind-mount to also append `<stream>-YYYYMMDD.jsonl` (`retrieval`, `reports`; Phase A2). It is also the default parent of `REPORTS_DIR`.
 - `REPORTS_DIR` — where `lsfusion_report_feedback` stores reports, one file each in `<REPORTS_DIR>/inbox/`. Default `<LOG_DIR>/reports`, so the `LOG_DIR` bind mount holds them; empty when neither is set, and then every report is refused.
 - `FEEDBACK_ENABLED` — `0` turns `lsfusion_report_feedback` off (it answers `disabled` and stores nothing). Default on.
-- `RETRIEVAL_BACKEND` — `store` (OpenAI Vector Store) or `local` (the in-process snapshot; falls back to the store when the snapshot is missing or the embedding call fails).
-- `RAG_SNAPSHOT_PATH` — where the local backend looks for the corpus snapshot (default `/data/snapshot/corpus.npz`).
+- `RAG_SNAPSHOT_PATH` — the corpus snapshot `lsfusion_retrieve_docs` searches in-process (default `/data/snapshot/corpus.npz`). Built by `tools/rag_build_snapshot.py` (the `ragBuildSnapshot` Jenkins step); without it the tool answers with an error.
 - `SNAPSHOT_MAX_AGE_DAYS` — how old a snapshot may get before every load warns (default 7; a warning, never a refusal).
-- `BATCH_TOTAL_CAP` / `BATCH_MAX_QUERIES` — the shared chunk budget of a multi-query call and the most queries one may carry (default 24 / 4).
+- `RESULT_MAX_CHARS` — the most chunk text one call returns, in characters, split evenly across its (query × branch) cells (default 36000).
+- `SCORE_FLOOR_GAP` — how far below a query's best score a chunk may sit and still be returned (default 0.10).
+- `BATCH_MAX_QUERIES` / `ARTICLE_MAX_NAMES` — the most queries / articles one call may carry (default 16 / 12).
+- `SECTIONS_MAX_CHARS` — characters the `ARTICLE_PARTIAL` status may spend naming the sections a walk did not return (default 1500).
 - `QUERY_LOG_MAX_CHARS` / `ERROR_LOG_MAX_CHARS` — caps on the verbatim query / error text stored in logs (default 2000 / 500).
 
 ## Event logging (`retrieve_docs`)
-Every `lsfusion_retrieve_docs` call emits one structured JSON line (best-effort — a logging failure never breaks the tool). Envelope `{schema_version, event, ts (ISO-8601 UTC ms), server_version, ok}` plus `{query (capped), type, n_requested, n_results, top_score = max(results[].score), latency_ms, results:[{rank, source, file_id, filename, score}]}` — no chunk text; `error_class`/`error_message` on failure. Written to **stderr** (keeps the STDIO transport's stdout protocol channel clean; Docker's `json-file` captures stderr anyway), and additionally to a dated file when `LOG_DIR` is set. See `MCP-FEEDBACK-PLAN.md`.
+Every `lsfusion_retrieve_docs` call emits one structured JSON line (best-effort — a logging failure never breaks the tool). Envelope `{schema_version, event, ts (ISO-8601 UTC ms), server_version, ok}` plus `{query (capped), type, n_requested, n_results, top_score = max(results[].score), latency_ms, results:[{rank, source, score}]}` — no chunk text; `error_class`/`error_message` on failure. Written to **stderr** (keeps the STDIO transport's stdout protocol channel clean; Docker's `json-file` captures stderr anyway), and additionally to a dated file when `LOG_DIR` is set. See `MCP-FEEDBACK-PLAN.md`.
 
 ## Feedback reports
 Each report `lsfusion_report_feedback` records becomes one file, `<REPORTS_DIR>/inbox/<UTC YYYYMMDDTHHMMSS>-<report_id>.json` (e.g. `20261119T101500-rpt_3f9c2a71d04e8b65.json`), so the names sort by time. The file holds the redacted report plus `report_id`, `ts`, `schema_version`, `server_version`, `dedup_fingerprint`, and `client` / `client_version` from the MCP handshake when the client gave them. It is written as `.<name>.tmp` in the same folder and renamed into place, so a reader that takes `*.json` never sees half a report.
@@ -102,7 +104,7 @@ Build and run:
 docker build -t lsfusion/mcp:latest .
 docker run --rm -p 8000:8000 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  -e RAG_VECTOR_STORE_ID=$RAG_VECTOR_STORE_ID \
+  -v "$PWD/snapshot:/data/snapshot:ro" \
   lsfusion/mcp:latest
 ```
 
@@ -121,8 +123,6 @@ docker compose up --build
      env:
        - name: OPENAI_API_KEY
          valueFrom: { secretKeyRef: { name: mcp-secrets, key: openai } }
-       - name: RAG_VECTOR_STORE_ID
-         valueFrom: { configMapKeyRef: { name: mcp-config, key: rag_vector_store_id } }
      ```
 
 2. **Docker Swarm / Compose secrets**  
@@ -132,8 +132,6 @@ docker compose up --build
        mcp:
          image: lsfusion/mcp:latest
          secrets: [openai_key]
-         environment:
-           - RAG_VECTOR_STORE_ID
      secrets:
        openai_key: { file: ./secrets/openai_key.txt }
      ```
@@ -163,19 +161,24 @@ Prefer secret stores over committing `.env` files.
 
 ## HTTP transport configuration (FastMCP)
 FastMCP reads host/port from environment variables:
-- `MCP_HOST` (default: `127.0.0.1`)
+- `MCP_HOST` (default: `0.0.0.0`)
 - `MCP_PORT` (default: `8000`)
 
 Examples:
 
 **Local run**
 ```bash
-export OPENAI_API_KEY=sk-... RAG_VECTOR_STORE_ID=vs_xxxx
+export OPENAI_API_KEY=sk-... RAG_SNAPSHOT_PATH=./corpus.npz
 export MCP_HOST=0.0.0.0 MCP_PORT=8000
 python server.py http
 ```
 
 **Docker**
 ```bash
-docker run --rm -p 8000:8000 \  -e OPENAI_API_KEY=$OPENAI_API_KEY \  -e RAG_VECTOR_STORE_ID=$RAG_VECTOR_STORE_ID \  -e MCP_HOST=0.0.0.0 \  -e MCP_PORT=8000 \  ghcr.io/<org>/<repo>/lsfusion-mcp:latest
+docker run --rm -p 8000:8000 \
+  -e OPENAI_API_KEY=$OPENAI_API_KEY \
+  -v "$PWD/snapshot:/data/snapshot:ro" \
+  -e MCP_HOST=0.0.0.0 \
+  -e MCP_PORT=8000 \
+  ghcr.io/<org>/<repo>/lsfusion-mcp:latest
 ```
