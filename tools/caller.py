@@ -11,7 +11,8 @@ field that lies.
 What IS knowable is the client: `clientInfo` from the handshake, and the
 User-Agent of the HTTP request. That answers "Claude Code or Cursor or the IDE
 plugin", not "Opus or Fable". Recorded because it is honest and free, not
-because it answers the question that prompted it.
+because it answers the question that prompted it. For the IntelliJ plugin the
+User-Agent also names the IDE build, kept as its own `ide_build` field.
 
 `x-agent-model` is read if a caller sets it: nothing sends it today, and Claude
 Code's own header config is reported not to reach `tools/call` at all, but a
@@ -20,9 +21,18 @@ lookup. Absent it, the field is simply missing rather than guessed.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 _MODEL_HEADER = "x-agent-model"
+
+# The IntelliJ plugin sends `lsfusion-intellij/<plugin version> <IDE build>`,
+# the build as IntelliJ's BuildNumber.asString() writes it: an optional product
+# code, then the number (`IU-253.28294.334`, `AI-243.22562.218.2431.12345`,
+# `IU-253.SNAPSHOT`). Only that shape yields an `ide_build`.
+_PLUGIN_CLIENT = "lsfusion-intellij"
+_PLUGIN_USER_AGENT = re.compile(
+    r"lsfusion-intellij/\S+ ((?:[A-Z]{1,10}-)?\d+(?:\.(?:\d+|SNAPSHOT))*)")
 
 # Two hierarchies: `idedev` extends `dev` (development on the source; a direct
 # connection is `dev` itself), `webapp` extends `app` (work in a running
@@ -87,6 +97,20 @@ def resolve_via() -> CallerVia:
     return CallerVia(kind, _VIA_ARTICLES[kind], given)
 
 
+def _ide_build(client, user_agent) -> str | None:
+    """The IDE build the IntelliJ plugin names in its User-Agent, else None.
+
+    The same plugin version behaves differently on different IDE builds, and
+    clientInfo carries only the plugin version. Taken only when the handshake
+    named the plugin and the header has the plugin's exact shape; another
+    client's User-Agent yields nothing here.
+    """
+    if client != _PLUGIN_CLIENT or not user_agent:
+        return None
+    m = _PLUGIN_USER_AGENT.fullmatch(str(user_agent).strip())
+    return m.group(1)[:40] if m else None
+
+
 def caller_fields() -> dict:
     """Client identity and access path for an event. NEVER raises.
 
@@ -115,6 +139,9 @@ def caller_fields() -> dict:
             ua = headers.get("user-agent")
             if ua:
                 out["user_agent"] = str(ua)[:80]
+            build = _ide_build(out.get("client"), ua)  # from the whole header, not the capped one
+            if build:
+                out["ide_build"] = build
             declared = headers.get(_MODEL_HEADER)
             if declared:
                 # Caller-declared, never verified. Named so no reader mistakes

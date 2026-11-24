@@ -19,6 +19,53 @@ def test_records_the_client_and_its_user_agent(caller_context):
     assert f["user_agent"].startswith("Cursor/3.19.13")
 
 
+@pytest.mark.parametrize("build", [
+    "IU-253.28294.334", "IC-243.21565.193", "AI-243.22562.218.2431.12345",
+    "JBC-261.1234", "IU-253.SNAPSHOT", "253.28294.334",
+])
+def test_the_plugin_user_agent_gives_the_ide_build(caller_context, build):
+    caller_context(name="lsfusion-intellij", version="1.0.316",
+                   headers={"user-agent": f"lsfusion-intellij/1.0.316 {build}"})
+    f = caller_fields()
+    assert f["ide_build"] == build
+    assert f["client_version"] == "1.0.316"
+
+
+def test_the_ide_build_is_read_from_the_whole_header(caller_context):
+    # user_agent is capped at 80; a long plugin version must not cut the build.
+    caller_context(name="lsfusion-intellij",
+                   headers={"user-agent": f"lsfusion-intellij/{'9' * 70} IU-253.28294.334"})
+    f = caller_fields()
+    assert len(f["user_agent"]) == 80 and f["ide_build"] == "IU-253.28294.334"
+
+
+@pytest.mark.parametrize("name,ua", [
+    # an old plugin: version "0", Java's default User-Agent
+    ("lsfusion-intellij", "Java/21.0.8"),
+    # the plugin's shape from another client is not the plugin
+    ("Claude Code", "lsfusion-intellij/1.0.316 IU-253.28294.334"),
+    ("lsfusion-server", "lsfusion-intellij/1.0.316 IU-253.28294.334"),
+    # not the plugin's exact shape
+    ("lsfusion-intellij", "lsfusion-intellij/1.0.316"),
+    ("lsfusion-intellij", "lsfusion-intellij/1.0.316 IU-253.28294.334 extra"),
+    ("lsfusion-intellij", "lsfusion-intellij/1.0.316 @someone"),
+    ("lsfusion-intellij", "lsfusion-intellij/1.0.316 IU-253.28294.334`"),
+    ("lsfusion-intellij", "lsfusion-intellij/1.0.316 iu-253.1"),
+    ("lsfusion-intellij", "Mozilla/5.0 lsfusion-intellij/1.0.316 IU-253.1"),
+])
+def test_no_ide_build_without_the_plugin_and_its_user_agent(caller_context, name, ua):
+    caller_context(name=name, version="0", headers={"user-agent": ua})
+    f = caller_fields()
+    assert "ide_build" not in f and f["user_agent"] == ua
+
+
+def test_no_ide_build_without_a_session_or_a_header(caller_context):
+    caller_context(session=False, headers={"user-agent": "lsfusion-intellij/1.0.316 IU-253.1"})
+    assert "ide_build" not in caller_fields()
+    caller_context(name="lsfusion-intellij")
+    assert "ide_build" not in caller_fields()
+
+
 def test_never_invents_a_model(caller_context):
     # The whole point: no supported MCP route carries the model, so the field
     # must be ABSENT rather than guessed from the client or the user agent.

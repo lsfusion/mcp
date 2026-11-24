@@ -257,10 +257,12 @@ def _rejected(report_id: str, reason: str, payload_size: int = 0) -> FeedbackOut
 STORE_FAILED = "the server could not store the report"
 
 # What a stored report takes from caller_fields(): the client the handshake
-# named. Not user_agent (it says no more than the client does) and not
-# declared_model (caller-declared, never verified; the agent names its model in
-# `agent` instead).
-_CALLER_KEYS = ("client", "client_version")
+# named and, for the IntelliJ plugin, the IDE build from its User-Agent (the
+# same plugin version behaves differently on different IDE builds). Not the
+# whole user_agent (for other clients it says no more than the client does)
+# and not declared_model (caller-declared, never verified; the agent names its
+# model in `agent` instead).
+_CALLER_KEYS = ("client", "client_version", "ide_build")
 
 
 def _utc_now() -> datetime:

@@ -193,6 +193,23 @@ def test_body_leaves_out_what_the_report_lacks():
     assert "Reported" not in fi.render_body(rec, _name(1, rec["report_id"]))
 
 
+def test_a_plugin_report_names_its_ide_build():
+    rec = _record(client="lsfusion-intellij", client_version="1.0.316",
+                  ide_build="IU-253.28294.334")
+    body = fi.render_body(rec, _name(1, rec["report_id"]))
+    assert ("Reported by claude-code, claude-opus-4-5 via lsfusion-intellij 1.0.316"
+            " on 2026-11-19 08:42 UTC · IDE IU-253.28294.334 · lsFusion 6.1"
+            " · MCP server `64e52fa`") in body
+
+
+def test_an_old_plugin_report_has_no_ide_build():
+    rec = _record(client="lsfusion-intellij", client_version="0")
+    body = fi.render_body(rec, _name(1, rec["report_id"]))
+    assert ("Reported by claude-code, claude-opus-4-5 via lsfusion-intellij 0"
+            " on 2026-11-19 08:42 UTC · lsFusion 6.1 · MCP server `64e52fa`") in body
+    assert "IDE" not in body
+
+
 def test_json_block_holds_the_record_verbatim():
     rec = _record(problem_summary="has ``` inside and @user")
     body = fi.render_body(rec, _name(1, rec["report_id"]))

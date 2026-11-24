@@ -236,6 +236,33 @@ def test_client_fields_come_from_the_handshake(inbox, monkeypatch):
     rec = _stored(inbox)
     assert rec["client"] == "claude-code" and rec["client_version"] == "2.1.3"
     assert "user_agent" not in rec and "declared_model" not in rec
+    assert "ide_build" not in rec
+
+
+def test_a_plugin_report_keeps_the_ide_build_not_the_user_agent(inbox, monkeypatch):
+    _capture_emit(monkeypatch)
+    monkeypatch.setattr(re_mod, "caller_fields", lambda: {
+        "via": "idedev", "client": "lsfusion-intellij", "client_version": "1.0.316",
+        "user_agent": "lsfusion-intellij/1.0.316 IU-253.28294.334",
+        "ide_build": "IU-253.28294.334"})
+    report_feedback_tool(_report())
+    rec = _stored(inbox)
+    assert (rec["client"], rec["client_version"], rec["ide_build"]) == (
+        "lsfusion-intellij", "1.0.316", "IU-253.28294.334")
+    assert "user_agent" not in rec
+
+
+def test_an_old_plugin_report_is_stored_without_an_ide_build(inbox, monkeypatch):
+    # Before the plugin sent its version: clientInfo version "0", Java's User-Agent.
+    _capture_emit(monkeypatch)
+    monkeypatch.setattr(re_mod, "caller_fields", lambda: {
+        "via": "idedev", "client": "lsfusion-intellij", "client_version": "0",
+        "user_agent": "Java/21.0.8"})
+    out = report_feedback_tool(_report())
+    assert out.status == "recorded"
+    rec = _stored(inbox)
+    assert rec["client"] == "lsfusion-intellij" and rec["client_version"] == "0"
+    assert "ide_build" not in rec and "user_agent" not in rec
 
 
 def test_a_client_without_a_version_stores_just_the_name(inbox, monkeypatch):

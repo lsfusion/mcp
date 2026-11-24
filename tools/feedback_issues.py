@@ -209,6 +209,8 @@ def _who(rec: dict) -> str:
     if when:
         reported += f" on {when[1]} {when[2]} UTC"
     parts = [reported] if reported != "Reported" else []
+    if flat("ide_build"):  # only the IntelliJ plugin's reports carry it
+        parts.append(f"IDE {flat('ide_build')}")
     if flat("lsfusion_version"):
         parts.append(f"lsFusion {flat('lsfusion_version')}")
     server = re.sub(r"[^\w.-]", "", flat("server_version"))[:40]
