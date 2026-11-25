@@ -1,11 +1,166 @@
-name: Build and Push Docker (simple)
+name: Test, build and deploy
 
+# On every push the whole test suite runs first, and the image is built only
+# once it is green; on main the image is then pushed and deployed. Daily and on
+# demand only the tests run: the drift checks can break from the other side
+# too, through a change in the platform or the plugin.
 on:
   push:
     branches: ["**"]
+  schedule:
+    # 03:23 UTC. GitHub mails a failed scheduled run to whoever last changed
+    # this cron line.
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
+  # Everything except the checks that read the sibling repositories. A skipped
+  # test fails the job: nothing outside the `siblings` mark has a reason to skip.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # as in the Dockerfile
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run tests
+        run: python -m pytest -m "not siblings" --forbid-skips
+
+  # The checks against the master of platform and plugin-idea: the proxies'
+  # drift guard, the guidance map, the chunker on real docs. A job of its own so
+  # they can stop blocking the deploy in one line (`needs` in `build`). Both
+  # roots are set explicitly, so a sibling file that is missing fails the check
+  # instead of skipping it, and --forbid-skips catches any other skip.
+  siblings:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: mcp
+          persist-credentials: false
+
+      - name: Checkout platform (master, the files the checks read)
+        uses: actions/checkout@v4
+        with:
+          repository: lsfusion/platform
+          ref: master
+          path: platform
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /server/src/main/java/lsfusion/server/physics/admin/mcp/MCPDispatcher.java
+            /docs/
+
+      - name: Checkout plugin-idea (master, the files the checks read)
+        uses: actions/checkout@v4
+        with:
+          repository: lsfusion/plugin-idea
+          ref: master
+          path: plugin-idea
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /src/com/lsfusion/mcp/McpBaseService.java
+            /src/com/lsfusion/mcp/McpToolset.kt
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # as in the Dockerfile
+          cache: pip
+          cache-dependency-path: mcp/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r mcp/requirements.txt pytest
+
+      - name: Run the checks against platform and plugin-idea
+        working-directory: mcp
+        env:
+          LSF_PLATFORM_ROOT: ${{ github.workspace }}/platform
+          LSF_PLUGIN_ROOT: ${{ github.workspace }}/plugin-idea
+        run: python -m pytest -m siblings --forbid-skips
+
+  # The `released` checks once more, against the latest release of plugin-idea
+  # (its newest `v<version>` tag, which Jenkins sets when it publishes the
+  # plugin): mcp deploys on every push, and must keep working with the plugin
+  # users already have, not only with the next one. A server change that the
+  # released plugin cannot take waits on its branch, red here, until a plugin
+  # release that can; a rerun after that release turns it green.
+  released-plugin:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: mcp
+          persist-credentials: false
+
+      - name: Find the latest plugin release
+        id: release
+        run: |
+          set -euo pipefail
+          tag=$(git ls-remote --tags --refs --sort=-version:refname \
+            https://github.com/lsfusion/plugin-idea.git 'v*' \
+            | awk 'NR == 1 { sub(/.*refs\/tags\//, ""); print }')
+          if [ -z "$tag" ]; then echo "::error::plugin-idea has no v* tag"; exit 1; fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Checked against plugin-idea \`$tag\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Checkout plugin-idea (that release, the files the checks read)
+        uses: actions/checkout@v4
+        with:
+          repository: lsfusion/plugin-idea
+          ref: ${{ steps.release.outputs.tag }}
+          path: plugin-idea
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /src/com/lsfusion/mcp/McpBaseService.java
+            /src/com/lsfusion/mcp/McpToolset.kt
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # as in the Dockerfile
+          cache: pip
+          cache-dependency-path: mcp/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r mcp/requirements.txt pytest
+
+      - name: Run the checks against the released plugin
+        working-directory: mcp
+        env:
+          LSF_PLUGIN_ROOT: ${{ github.workspace }}/plugin-idea
+        run: python -m pytest -m released --forbid-skips
+
   build:
+    # Drop `siblings` or `released-plugin` here to deploy even while the
+    # platform or the plugin disagrees with mcp; the scheduled runs keep
+    # reporting it.
+    needs: [test, siblings, released-plugin]
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -49,4 +204,3 @@ jobs:
           curl -fsS -X POST \
             -u "$JENKINS_USER:$JENKINS_TOKEN" \
             "https://jenkins.lsfusion.org/job/deployMcp/build"
-
