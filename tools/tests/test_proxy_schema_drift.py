@@ -8,8 +8,9 @@ The central Pydantic models are authoritative. For each proxy we slice the
 region that declares the tool, tokenize it, and assert every central field name
 and every central enum value APPEARS there (a coverage/subset check — it catches
 "central added/renamed a field or enum value, proxy forgot it", the drift that
-actually bites). Reverse drift (proxy keeps a field central dropped) is not
-checked here.
+actually bites). Reverse drift (proxy keeps a field central dropped) is
+checked only where it breaks a call: see "reverse drift" and "what a released
+plugin depends on" below.
 
 The checks that read the proxies carry the `siblings` mark and find the sibling
 checkouts through tools/tests/siblings.py: next to mcp by default, as in the
@@ -18,6 +19,10 @@ the guard can be aimed at the worktree that actually carries a mirroring change
 instead of whatever branch the workspace checkout happens to be on. A
 standalone mcp checkout skips them; with a root set explicitly, a missing file
 fails instead. CI checks out both siblings' master and sets both roots.
+
+Those also marked `released` are what a plugin already released depends on;
+CI runs them against the plugin's latest release tag as well (see "what a
+released plugin depends on" at the end).
 """
 from __future__ import annotations
 
@@ -33,6 +38,9 @@ from tools.rag_retrieve import RetrieveDocsOutput, retrieve_docs_tool
 from tools.tests.siblings import PLATFORM_ROOT, PLUGIN_ROOT, need
 
 siblings = pytest.mark.siblings
+# Also run against the latest RELEASED plugin (see "what a released plugin
+# depends on" below): a failure there breaks a plugin users already have.
+released = pytest.mark.released
 
 PLATFORM = PLATFORM_ROOT / "server/src/main/java/lsfusion/server/physics/admin/mcp/MCPDispatcher.java"
 PLUGIN_JAVA = PLUGIN_ROOT / "src/com/lsfusion/mcp/McpBaseService.java"
@@ -562,7 +570,13 @@ def _declares_null(java: str, value: str | None, followed: frozenset = frozenset
 def _kotlin_types(params: str) -> dict[str, str]:
     """The declared type of each `val` in a constructor's parameter list, by its
     wire name: its @SerialName, else its own."""
-    types, depth, start, i = {}, 0, 0, 0
+    return {wire: type_ for wire, (type_, _) in _kotlin_vals(params).items()}
+
+
+def _kotlin_vals(params: str) -> dict[str, tuple[str, str | None]]:
+    """(type, default or None) of each `val` in a constructor's parameter list,
+    by its wire name: its @SerialName, else its own."""
+    vals, depth, start, i = {}, 0, 0, 0
     pieces = []
     while i < len(params):
         j = _skip_literal(params, i)
@@ -584,11 +598,13 @@ def _kotlin_types(params: str) -> dict[str, str]:
         val = re.search(r"\bval\s+(\w+)\s*:", piece)
         if val:
             wire = re.search(r'@SerialName\("([^"]+)"\)', piece[:val.start()])
-            types[wire.group(1) if wire else val.group(1)] = piece[val.end():].split("=")[0].strip()
-    return types
+            type_, eq, default = piece[val.end():].partition("=")
+            vals[wire.group(1) if wire else val.group(1)] = (type_.strip(), default.strip() if eq else None)
+    return vals
 
 
 @siblings
+@released
 @pytest.mark.parametrize("descriptor,result,fields", [
     ("JSONObject buildRetrieveDocsToolDescriptor(", "JSONObject docItemSchema", RETRIEVE_OUT_NULLABLE),
     ("JSONObject buildReportFeedbackToolDescriptor(", "JSONObject outputSchema", FEEDBACK_OUT_NULLABLE),
@@ -602,6 +618,7 @@ def test_plugin_java_result_schemas_admit_null_where_central_sends_it(descriptor
 
 
 @siblings
+@released
 @pytest.mark.parametrize("dto,fields", [
     ("data class RemoteDocItem(", RETRIEVE_OUT_NULLABLE),
     ("data class FeedbackOutput(", FEEDBACK_OUT_NULLABLE),
@@ -631,3 +648,298 @@ def test_platform_declares_no_result_schema_for_these_tools(method):
     region = _code(_brace_slice(_need(PLATFORM), f"JSONObject {method}("))
     assert '"outputSchema"' not in region, \
         f"platform MCPDispatcher.{method} declares a result schema now: check its nulls as the plugin's are"
+
+
+# --- what a released plugin depends on ----------------------------------------
+#
+# Everything above holds the server to the plugin's MASTER, the code its next
+# release will ship. But mcp deploys on every commit, while a plugin release
+# waits for review and users update when they update: the server is talking to
+# plugins that are already out. The checks marked `released` hold it to what
+# the latest released plugin depends on, and CI runs them against that
+# release's tag (`v<version>`) as well as against master. They are narrower
+# than the checks above on purpose: a released plugin that lacks a new
+# parameter, or words a description the old way, still works; these catch what
+# stops it working:
+#
+# - a tool it proxies is gone;
+# - it sends an argument the server rejects: FastMCP refuses an unexpected
+#   keyword, and its validation an enum value it does not know (an unknown field
+#   inside the report is ignored, so only the tool's own arguments count);
+# - the server requires a field the plugin cannot send;
+# - the server sends a result the plugin's schema rejects: a field a closed
+#   object does not declare, an enum value it does not list, a null where it
+#   declares none (the two nullability checks above), or no field it requires.
+#
+# The REST endpoint /lsfusion passes arguments and results through as they are,
+# under the schemas McpBaseService.java publishes; the IDE's MCP server builds
+# its schemas from McpToolset.kt, which sends what its wrappers `put` and
+# decodes the result into its DTOs.
+_RELEASED_TOOLS = [
+    ("lsfusion_retrieve_docs", "JSONObject buildRetrieveDocsToolDescriptor(", "suspend fun retrieveDocs("),
+    ("lsfusion_get_guidance", "JSONObject buildGetGuidanceToolDescriptor(", "suspend fun getGuidance("),
+    ("lsfusion_report_feedback", "JSONObject buildReportFeedbackToolDescriptor(", "suspend fun reportFeedback("),
+]
+_RELEASED_IDS = [t.removeprefix("lsfusion_") for t, _, _ in _RELEASED_TOOLS]
+# Where the Kotlin DTOs that make up a tool's input are, for the fields nested
+# in it; a tool missing here takes no nested input.
+_KOTLIN_INPUT_DTOS = {"lsfusion_report_feedback": ("data class FbExpectation", "class McpToolset")}
+# The result objects: (descriptor, the Java object's statement, tool, its
+# central $defs entry or None for the result itself, the Kotlin DTO).
+_RESULT_OBJECTS = [
+    ("JSONObject buildRetrieveDocsToolDescriptor(", "JSONObject outputSchema =",
+     "lsfusion_retrieve_docs", None, "data class RetrieveDocsOutput("),
+    ("JSONObject buildRetrieveDocsToolDescriptor(", "JSONObject docItemSchema =",
+     "lsfusion_retrieve_docs", "DocItem", "data class RemoteDocItem("),
+    ("JSONObject buildReportFeedbackToolDescriptor(", "JSONObject outputSchema =",
+     "lsfusion_report_feedback", None, "data class FeedbackOutput("),
+]
+_RESULT_IDS = ["retrieve_docs", "retrieve_docs-item", "report_feedback"]
+_PUT = re.compile(r'\.put\(\s*"([^"]+)"\s*,')
+
+
+def _statement(text: str, opening: str) -> str | None:
+    """From `opening` to the `;` that ends its statement, past literals and
+    brackets. None when there is no such statement."""
+    if opening not in text:
+        return None
+    start = i = text.index(opening)
+    depth = 0
+    while i < len(text):
+        j = _skip_literal(text, i)
+        if j != i:
+            i = j
+            continue
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+        elif text[i] == ";" and depth == 0:
+            return text[start:i]
+        i += 1
+    return text[start:]
+
+
+def _put_args(chain: str) -> dict[str, str]:
+    """The value of each `.put("<key>", <value>)` a builder chain makes at its
+    own level, by key: not the keys of the objects nested in those values."""
+    out, depth, i = {}, 0, 0
+    while i < len(chain):
+        m = _PUT.match(chain, i) if depth == 0 else None
+        if m:
+            end = _closing(chain, m.end(), "(", ")")
+            out[m.group(1)] = chain[m.end():end]
+            i = len(chain) if end is None else end + 1
+            continue
+        j = _skip_literal(chain, i)
+        if j != i:
+            i = j
+            continue
+        if chain[i] in "([{":
+            depth += 1
+        elif chain[i] in ")]}":
+            depth -= 1
+        i += 1
+    return out
+
+
+def _literals(code: str) -> set[str]:
+    return set(re.findall(r'"((?:[^"\\]|\\.)*)"', code))
+
+
+def _offered_values(java: str) -> set[str]:
+    """Enum values Java schema code offers: the literals in its `feArr(...)` and
+    `.put("enum", ...)` arguments, apart from its `required` lists."""
+    code, required = _code(java), '.put("required",'
+    while (args := _call_args(code, required)) is not None:
+        start = code.index(required)
+        code = code[:start] + code[start + len(required) + len(args) + 1:]
+    values: set[str] = set()
+    for opening in ("feArr(", '.put("enum",'):
+        for m in re.finditer(re.escape(opening), code):
+            values |= _literals(_call_args(code[m.start():], opening) or "")
+    return values
+
+
+def _schema_lists(schema, key: str) -> set[str]:
+    """Every string in every `key` list (`enum`, `required`) anywhere in a JSON schema."""
+    if isinstance(schema, list):
+        return set().union(*(_schema_lists(s, key) for s in schema))
+    if not isinstance(schema, dict):
+        return set()
+    own = schema.get(key)
+    out = {v for v in own if isinstance(v, str)} if isinstance(own, list) else set()
+    return out.union(*(_schema_lists(v, key) for v in schema.values()))
+
+
+def _java_input(java: str, descriptor: str) -> str:
+    """A descriptor's code up to the end of its input schema: with the objects
+    that schema is built from, without the result schema."""
+    region = _brace_slice(java, descriptor)
+    stmt = _statement(region, "JSONObject inputSchema =")
+    assert stmt is not None, f"plugin McpBaseService: {descriptor} builds no inputSchema"
+    return _code(region[:region.index(stmt) + len(stmt)])
+
+
+def _java_object(java: str, descriptor: str, var: str) -> dict[str, str]:
+    stmt = _statement(_brace_slice(java, descriptor), var)
+    assert stmt is not None, f"plugin McpBaseService: {descriptor} has no {var!r}"
+    return _put_args(_code(stmt))
+
+
+def _java_properties(obj: dict[str, str], who: str) -> dict[str, str]:
+    assert "properties" in obj, f"{who}: no properties found"
+    return _put_args(obj["properties"])
+
+
+def _kotlin_wire_keys(kotlin: str, wrapper: str) -> set[str]:
+    """The keys a Kotlin wrapper puts into the arguments it sends."""
+    region = _brace_slice(kotlin, wrapper)
+    params = _call_args(region, wrapper)
+    assert params is not None, f"plugin McpToolset: no {wrapper}"
+    return set(_PUT.findall(_code(region[len(wrapper) + len(params):])))
+
+
+def _kotlin_declared(region: str) -> set[str]:
+    code = _code(region)
+    return set(re.findall(r'@SerialName\("([^"]+)"\)', code)) | set(re.findall(r"\bval\s+(\w+)\s*:", code))
+
+
+def _central_result(tool: str, def_name: str | None) -> dict:
+    schema = _tools()[tool].outputSchema
+    return schema["$defs"][def_name] if def_name else schema
+
+
+def _problems(found: dict[str, set]) -> str:
+    """`<who> [names]` for each non-empty set, joined; empty when all are."""
+    return "; ".join(f"{who} {sorted(names)}" for who, names in found.items() if names)
+
+
+@siblings
+@released
+def test_plugin_proxies_only_tools_the_server_has():
+    java, kotlin = _need(PLUGIN_JAVA), _need(PLUGIN_KT)
+    constants = dict(re.findall(r'static\s+final\s+String\s+(\w+)\s*=\s*"(lsfusion_\w+)"', java))
+    listed = _call_args(_code(java), "REMOTE_TOOL_NAMES = Set.of(")
+    assert listed is not None, "plugin McpBaseService: no REMOTE_TOOL_NAMES"
+    proxied = {constants.get(n, n) for n in re.findall(r"\w+", listed)} \
+        | set(re.findall(r'callRemoteToolResultJson\(\s*"(\w+)"', _code(kotlin)))
+    assert proxied, "plugin: no proxied tools found"
+    gone = sorted(proxied - set(_tools()))
+    assert not gone, f"plugin proxies tools the server no longer has: {gone}"
+    unchecked = sorted(proxied - {t for t, _, _ in _RELEASED_TOOLS})
+    assert not unchecked, f"plugin proxies tools these checks do not cover, add them to _RELEASED_TOOLS: {unchecked}"
+
+
+@siblings
+@released
+@pytest.mark.parametrize("tool,descriptor,wrapper", _RELEASED_TOOLS, ids=_RELEASED_IDS)
+def test_plugin_sends_only_arguments_the_server_takes(tool, descriptor, wrapper):
+    takes = set(_tools()[tool].inputSchema["properties"])
+    java = set(_java_properties(_java_object(_need(PLUGIN_JAVA), descriptor, "JSONObject inputSchema ="),
+                                f"plugin McpBaseService {descriptor}"))
+    kotlin = _kotlin_wire_keys(_need(PLUGIN_KT), wrapper)
+    assert java and kotlin, f"plugin: no arguments found for {tool}"
+    bad = _problems({"McpBaseService offers": java - takes, "McpToolset sends": kotlin - takes})
+    assert not bad, f"{tool}: arguments the server rejects: {bad}"
+
+
+@siblings
+@released
+@pytest.mark.parametrize("tool,descriptor", [(t, d) for t, d, _ in _RELEASED_TOOLS if t != "lsfusion_get_guidance"],
+                         ids=[i for i in _RELEASED_IDS if i != "get_guidance"])
+def test_plugin_offers_only_enum_values_the_server_accepts(tool, descriptor):
+    # The Kotlin DTOs type these as plain strings, so only the Java schemas offer values.
+    offered = _offered_values(_java_input(_need(PLUGIN_JAVA), descriptor))
+    assert offered, f"plugin McpBaseService {descriptor}: no enum values found"  # the parser still sees them
+    bad = sorted(offered - _schema_lists(_tools()[tool].inputSchema, "enum"))
+    assert not bad, f"plugin McpBaseService ({tool}) offers values the server rejects: {bad}"
+
+
+@siblings
+@released
+@pytest.mark.parametrize("tool,descriptor,wrapper", _RELEASED_TOOLS, ids=_RELEASED_IDS)
+def test_plugin_declares_every_field_the_server_requires(tool, descriptor, wrapper):
+    schema = _tools()[tool].inputSchema
+    top, nested = set(schema.get("required") or []), _schema_lists(schema.get("$defs") or {}, "required")
+    java = _java_input(_need(PLUGIN_JAVA), descriptor)
+    kotlin = _need(PLUGIN_KT)
+    dtos = set()
+    if nested:
+        assert tool in _KOTLIN_INPUT_DTOS, f"{tool} takes nested input now: add its Kotlin DTOs to _KOTLIN_INPUT_DTOS"
+        first, last = _KOTLIN_INPUT_DTOS[tool]
+        dtos = _kotlin_declared(kotlin[kotlin.index(first):kotlin.index(last)])
+    bad = _problems({
+        "McpBaseService": {f for f in top | nested if '.put("%s"' % f not in java},
+        f"McpToolset {wrapper}": top - _kotlin_wire_keys(kotlin, wrapper),
+        "McpToolset DTOs": nested - dtos,
+    })
+    assert not bad, f"{tool}: fields the server requires, which the plugin does not declare: {bad}"
+
+
+@siblings
+@released
+@pytest.mark.parametrize("descriptor,var,tool,def_name,dto", _RESULT_OBJECTS, ids=_RESULT_IDS)
+def test_plugin_result_schema_lets_every_server_field_through(descriptor, var, tool, def_name, dto):
+    obj = _java_object(_need(PLUGIN_JAVA), descriptor, var)
+    if obj.get("additionalProperties", "").strip() != "false":
+        return  # an open object takes any field
+    who = f"plugin McpBaseService {descriptor} {var}"
+    missing = sorted(set(_central_result(tool, def_name)["properties"]) - set(_java_properties(obj, who)))
+    assert not missing, f"{who}: closed, so a result with these server fields fails validation: {missing}"
+
+
+@siblings
+@released
+def test_plugin_kotlin_decodes_results_ignoring_fields_it_does_not_know():
+    # What lets the Kotlin DTOs leave out a field the server sends.
+    config = _code(_brace_slice(_need(PLUGIN_KT), "val json = Json"), literals=False)
+    assert re.search(r"\bignoreUnknownKeys\s*=\s*true\b", config), \
+        "plugin McpToolset: `json` must set ignoreUnknownKeys = true, or a new server field fails every decode"
+
+
+@siblings
+@released
+@pytest.mark.parametrize("descriptor,var,tool,def_name,dto", _RESULT_OBJECTS, ids=_RESULT_IDS)
+def test_plugin_result_enums_list_every_value_the_server_sends(descriptor, var, tool, def_name, dto):
+    who = f"plugin McpBaseService {descriptor} {var}"
+    props = _java_properties(_java_object(_need(PLUGIN_JAVA), descriptor, var), who)
+    bad = {}
+    for name, prop in _central_result(tool, def_name)["properties"].items():
+        offered = _offered_values(props.get(name, ""))
+        if offered and _enum_values(prop) - offered:  # no values listed: any string will do
+            bad[name] = sorted(_enum_values(prop) - offered)
+    assert not bad, f"{who}: values the server sends, which the schema does not list: {bad}"
+
+
+@siblings
+@released
+@pytest.mark.parametrize("descriptor,var,tool,def_name,dto", _RESULT_OBJECTS, ids=_RESULT_IDS)
+def test_plugin_requires_only_result_fields_the_server_sends(descriptor, var, tool, def_name, dto):
+    # The server sends every field of its result models (nulls included), so a
+    # field it has is a field that arrives.
+    sends = set(_central_result(tool, def_name)["properties"])
+    java = _literals(_java_object(_need(PLUGIN_JAVA), descriptor, var).get("required", ""))
+    params = _call_args(_need(PLUGIN_KT), dto)
+    assert params is not None, f"plugin McpToolset: no {dto}"
+    kotlin = {w for w, (type_, default) in _kotlin_vals(params).items() if not type_.endswith("?") and default is None}
+    assert java and kotlin, f"plugin: no required result fields found for {var} / {dto}"  # the parsers still see them
+    bad = _problems({f"McpBaseService {var} requires": java - sends,
+                       f"McpToolset {dto} cannot do without": kotlin - sends})
+    assert not bad, f"{tool}: result fields the server does not send: {bad}"
+
+
+def test_central_released_contract_guard():
+    # The server side of the checks above, which pass for the wrong reason when
+    # what they compare against is empty. Also a server change that breaks
+    # every released plugin, whatever its version, and so one to make on
+    # purpose: dropping a tool the plugin proxies.
+    tools = _tools()
+    assert {t for t, _, _ in _RELEASED_TOOLS} <= set(tools)
+    fb = tools["lsfusion_report_feedback"]
+    assert {"report", "signal_type", "primary_target"} <= \
+        set(fb.inputSchema.get("required") or []) | _schema_lists(fb.inputSchema.get("$defs") or {}, "required")
+    assert {"language", "paradigm", "how-to"} <= _schema_lists(tools["lsfusion_retrieve_docs"].inputSchema, "enum")
+    assert {"recorded", "disabled", "rejected"} <= _enum_values(fb.outputSchema["properties"]["status"])
+    assert {"docs", "status"} <= set(_central_result("lsfusion_retrieve_docs", None)["properties"])
+    assert {"id", "source", "text"} <= set(_central_result("lsfusion_retrieve_docs", "DocItem")["properties"])
