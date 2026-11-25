@@ -20,11 +20,8 @@ import pytest
 
 @pytest.fixture(scope="module")
 def mcp_server():
-    # rag_retrieve builds an OpenAI client at import time; a dummy key is enough
-    # (nothing here makes a network call).
-    import os
-
-    os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy")
+    # rag_retrieve builds an OpenAI client at import time, with the dummy key
+    # the root conftest sets (nothing here makes a network call).
     return importlib.import_module("server").mcp
 
 

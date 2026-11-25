@@ -33,6 +33,19 @@ mcp install server.py
 mcp dev server.py
 ```
 
+## Tests
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt pytest
+pytest
+```
+
+No OpenAI key is needed: the root `conftest.py` sets a dummy one, and no test calls the API. CI and the image use Python 3.12.
+
+- **Sibling checks.** Tests marked `siblings` read the repositories mcp is mirrored into: the drift guard (`tools/tests/test_proxy_schema_drift.py`) reads the platform's `MCPDispatcher.java` and guidance docs (`docs/rules`, `docs/brief`) and the plugin's `McpBaseService.java` / `McpToolset.kt`; the chunker test reads real platform docs.
+- **Roots.** By default they look for `platform/` and `plugin-idea/` (or `plugin_idea/`) next to mcp, as in the super-workspace. `LSF_PLATFORM_ROOT` / `LSF_PLUGIN_ROOT` point them elsewhere, e.g. at a worktree with a mirroring change. A sibling that is not there skips its checks; under a root set explicitly, a missing file fails. `--forbid-skips` turns every skip into a failure.
+
 ## Adding new tools
 Create a new module under `tools/` and register it with `@mcp.tool()` in `server.py` (or build an auto-discovery
 if you prefer). Keep tool signatures simple and JSON-serializable.

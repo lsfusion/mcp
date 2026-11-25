@@ -11,16 +11,17 @@ and every central enum value APPEARS there (a coverage/subset check — it catch
 actually bites). Reverse drift (proxy keeps a field central dropped) is not
 checked here.
 
-Runs only in the aggregate super-workspace where the sibling repos exist; a
-standalone mcp checkout skips it. The sibling roots can be redirected with
-`LSF_PLATFORM_ROOT` / `LSF_PLUGIN_ROOT`, so the guard can be pointed at the
-worktree that actually carries a mirroring change instead of whatever branch
-the workspace checkout happens to be on.
+The checks that read the proxies carry the `siblings` mark and find the sibling
+checkouts through tools/tests/siblings.py: next to mcp by default, as in the
+super-workspace, or wherever `LSF_PLATFORM_ROOT` / `LSF_PLUGIN_ROOT` point, so
+the guard can be aimed at the worktree that actually carries a mirroring change
+instead of whatever branch the workspace checkout happens to be on. A
+standalone mcp checkout skips them; with a root set explicitly, a missing file
+fails instead. CI checks out both siblings' master and sets both roots.
 """
 from __future__ import annotations
 
 import inspect
-import os
 import pathlib
 import re
 
@@ -29,15 +30,13 @@ import pytest
 from tools.feedback import FeedbackOutput, FeedbackReport
 from tools.guidance import BRANCH_PREFIX
 from tools.rag_retrieve import RetrieveDocsOutput, retrieve_docs_tool
+from tools.tests.siblings import PLATFORM_ROOT, PLUGIN_ROOT, need
 
-# tools/tests/ -> tools -> mcp -> <aggregate>
-_AGG = pathlib.Path(__file__).resolve().parents[3]
-_ROOTS_OVERRIDDEN = bool(os.environ.get("LSF_PLATFORM_ROOT") or os.environ.get("LSF_PLUGIN_ROOT"))
-_PLATFORM_ROOT = pathlib.Path(os.environ.get("LSF_PLATFORM_ROOT", _AGG / "platform"))
-_PLUGIN_ROOT = pathlib.Path(os.environ.get("LSF_PLUGIN_ROOT", _AGG / "plugin-idea"))
-PLATFORM = _PLATFORM_ROOT / "server/src/main/java/lsfusion/server/physics/admin/mcp/MCPDispatcher.java"
-PLUGIN_JAVA = _PLUGIN_ROOT / "src/com/lsfusion/mcp/McpBaseService.java"
-PLUGIN_KT = _PLUGIN_ROOT / "src/com/lsfusion/mcp/McpToolset.kt"
+siblings = pytest.mark.siblings
+
+PLATFORM = PLATFORM_ROOT / "server/src/main/java/lsfusion/server/physics/admin/mcp/MCPDispatcher.java"
+PLUGIN_JAVA = PLUGIN_ROOT / "src/com/lsfusion/mcp/McpBaseService.java"
+PLUGIN_KT = PLUGIN_ROOT / "src/com/lsfusion/mcp/McpToolset.kt"
 
 _IDENT = re.compile(r"[a-z][a-z0-9_-]*")
 
@@ -132,32 +131,29 @@ def _assert_covers(region_tokens: set[str], fields: set[str], enums: set[str], w
     assert not missing_e, f"{who}: missing central enum values {missing_e}"
 
 
-def _need(path: pathlib.Path):
-    if not path.exists():
-        # An explicitly pointed root that does not exist is a typo, not an
-        # absent sibling: skipping it would turn the whole guard green.
-        if _ROOTS_OVERRIDDEN:
-            raise AssertionError(f"root was set explicitly but file is missing: {path}")
-        pytest.skip(f"sibling repo file not present: {path}")
-    return path.read_text(encoding="utf-8")
+def _need(path: pathlib.Path) -> str:
+    return need(path).read_text(encoding="utf-8")
 
 
 IN_FIELDS, IN_ENUMS = _contract(FeedbackReport)
 OUT_FIELDS, OUT_ENUMS = _contract(FeedbackOutput)
 
 
+@siblings
 def test_platform_descriptor_covers_central_input():
     text = _need(PLATFORM)
     region = _brace_slice(text, "JSONObject reportFeedbackDescriptor(")  # definition, not the call site
     _assert_covers(_tokens(region), IN_FIELDS, IN_ENUMS, "platform MCPDispatcher")
 
 
+@siblings
 def test_plugin_java_descriptor_covers_central_input_and_output():
     text = _need(PLUGIN_JAVA)
     region = _brace_slice(text, "JSONObject buildReportFeedbackToolDescriptor(")  # definition, not the call site
     _assert_covers(_tokens(region), IN_FIELDS | OUT_FIELDS, IN_ENUMS | OUT_ENUMS, "plugin McpBaseService")
 
 
+@siblings
 def test_plugin_kotlin_dtos_cover_central_input_and_output():
     text = _need(PLUGIN_KT)
     # The Fb* DTO block sits between RetrieveDocsOutput and `class McpToolset`.
@@ -185,6 +181,7 @@ RETRIEVE_IN_FIELDS = set(inspect.signature(retrieve_docs_tool).parameters)
 RETRIEVE_OUT_FIELDS, RETRIEVE_OUT_ENUMS = _contract(RetrieveDocsOutput)
 
 
+@siblings
 def test_platform_retrieve_descriptor_covers_central_input():
     text = _need(PLATFORM)
     region = _brace_slice(text, "JSONObject retrieveDocsDescriptor(")
@@ -193,6 +190,7 @@ def test_platform_retrieve_descriptor_covers_central_input():
     _assert_declares(region, RETRIEVE_IN_FIELDS, who)
 
 
+@siblings
 def test_plugin_java_retrieve_descriptor_covers_central_input_and_output():
     text = _need(PLUGIN_JAVA)
     region = _brace_slice(text, "JSONObject buildRetrieveDocsToolDescriptor(")
@@ -202,6 +200,7 @@ def test_plugin_java_retrieve_descriptor_covers_central_input_and_output():
     _assert_declares(region, RETRIEVE_IN_FIELDS | RETRIEVE_OUT_FIELDS, who)
 
 
+@siblings
 def test_plugin_kotlin_retrieve_dtos_cover_central_output():
     text = _need(PLUGIN_KT)
     region = text[text.index("data class RemoteDocItem"):text.index("// report_feedback DTOs")]
@@ -210,6 +209,7 @@ def test_plugin_kotlin_retrieve_dtos_cover_central_output():
     _assert_declares(region, RETRIEVE_OUT_FIELDS, who, kotlin=True)
 
 
+@siblings
 def test_plugin_kotlin_wrapper_takes_every_parameter_by_its_central_name():
     # The DTO block above cannot see the call site. The IDE's MCP server names
     # an argument after its Kotlin parameter and drops any key that matches
@@ -262,18 +262,21 @@ def test_central_guidance_contract_covers_every_named_read():
     assert set(BRANCH_PREFIX) <= GUIDANCE_PARAMS
 
 
+@siblings
 def test_platform_guidance_descriptor_declares_every_parameter():
     text = _need(PLATFORM)
     region = _brace_slice(text, "JSONObject getGuidanceDescriptor(")
     _assert_declares(region, GUIDANCE_PARAMS, "platform MCPDispatcher (get_guidance)")
 
 
+@siblings
 def test_plugin_java_guidance_descriptor_declares_every_parameter():
     text = _need(PLUGIN_JAVA)
     region = _brace_slice(text, "JSONObject buildGetGuidanceToolDescriptor(")
     _assert_declares(region, GUIDANCE_PARAMS, "plugin McpBaseService (get_guidance)")
 
 
+@siblings
 def test_plugin_kotlin_wrapper_forwards_the_article_name():
     # The Kotlin path declares its schema through annotations on the function,
     # so the parameters and the wire names both live at the call site.
@@ -293,12 +296,14 @@ def test_plugin_kotlin_wrapper_forwards_the_article_name():
 # The value is checked where an enum value actually lives (`.put("<v>")` inside
 # the JSONArray), not as a bare token: both descriptions legitimately mention
 # the two branches in prose, to say where they went.
+@siblings
 def test_platform_retrieve_enum_no_longer_offers_the_guidance_branches():
     region = _brace_slice(_need(PLATFORM), "JSONObject retrieveDocsDescriptor(")
     still = [v for v in ("brief", "rules") if f'.put("{v}")' in region]
     assert not still, f"platform MCPDispatcher: `type` still offers {still}"
 
 
+@siblings
 def test_plugin_java_retrieve_enum_no_longer_offers_the_guidance_branches():
     region = _brace_slice(_need(PLUGIN_JAVA), "JSONObject buildRetrieveDocsToolDescriptor(")
     still = [v for v in ("brief", "rules") if f'.put("{v}")' in region]
@@ -321,23 +326,22 @@ def test_central_no_longer_searches_the_guidance_branches():
 # hand-maintained beside the article files, so an article nothing points at is
 # invisible (which is what started all of this) and a mapped article that does
 # not exist is a guaranteed miss on a name the assistant read from the map.
-_GUIDANCE_DOCS = _PLATFORM_ROOT / "docs"
+_GUIDANCE_DOCS = PLATFORM_ROOT / "docs"
 
 
 def _guidance_articles(branch: str) -> set[str]:
-    d = _GUIDANCE_DOCS / branch / "en"
-    if not d.is_dir():
-        pytest.skip(f"guidance docs not present: {d}")
+    d = need(_GUIDANCE_DOCS / branch / "en")
     prefix = branch.capitalize() + "_"
     return {p.stem[len(prefix):] for p in d.glob(f"{prefix}*.md")}
 
 
 def _mapped_names(branch: str) -> set[str]:
-    top = (_GUIDANCE_DOCS / branch / "en" / f"{branch.capitalize()}.md").read_text(encoding="utf-8")
+    top = _need(_GUIDANCE_DOCS / branch / "en" / f"{branch.capitalize()}.md")
     # First column of the map table: | `name` | ...
     return set(re.findall(r"^\|\s*`([a-z0-9_]+)`\s*\|", top, re.M))
 
 
+@siblings
 @pytest.mark.parametrize("branch", ["rules", "brief"])
 def test_the_map_lists_exactly_the_articles_that_exist(branch):
     mapped, actual = _mapped_names(branch), _guidance_articles(branch)
@@ -346,11 +350,10 @@ def test_the_map_lists_exactly_the_articles_that_exist(branch):
         f"an unmapped article is invisible, a mapped one that is missing is a dead name")
 
 
+@siblings
 @pytest.mark.parametrize("branch", ["rules", "brief"])
 def test_no_guidance_article_still_points_at_the_retired_lookup(branch):
-    d = _GUIDANCE_DOCS / branch
-    if not d.is_dir():
-        pytest.skip(f"guidance docs not present: {d}")
+    d = need(_GUIDANCE_DOCS / branch)
     stale = [str(p.relative_to(_GUIDANCE_DOCS)) for p in d.rglob("*.md")
              if "type='rules'" in p.read_text(encoding="utf-8")
              or "type='brief'" in p.read_text(encoding="utf-8")]
@@ -367,6 +370,7 @@ def test_no_guidance_article_still_points_at_the_retired_lookup(branch):
 from settings import BATCH_MAX_QUERIES
 
 
+@siblings
 def test_platform_query_max_items_matches_the_central_cap():
     region = _brace_slice(_need(PLATFORM), "JSONObject retrieveDocsDescriptor(")
     m = re.search(r'\.put\("maxItems",\s*(\d+)\)', region)
@@ -374,6 +378,7 @@ def test_platform_query_max_items_matches_the_central_cap():
     assert int(m.group(1)) == BATCH_MAX_QUERIES
 
 
+@siblings
 def test_plugin_java_query_max_items_matches_the_central_cap():
     region = _brace_slice(_need(PLUGIN_JAVA), "JSONObject buildRetrieveDocsToolDescriptor(")
     m = re.search(r'\.put\("maxItems",\s*(\d+)\)', region)
@@ -381,6 +386,7 @@ def test_plugin_java_query_max_items_matches_the_central_cap():
     assert int(m.group(1)) == BATCH_MAX_QUERIES
 
 
+@siblings
 def test_plugin_kotlin_states_the_cap_in_prose():
     # The annotation path has no machine constraint on the list, so the
     # number lives only in the description there — check it is the right one.
@@ -395,7 +401,6 @@ def test_plugin_kotlin_states_the_cap_in_prose():
 # that silently ignored it. Descriptions are part of the contract a model
 # reads, so the proxies mirror them verbatim.
 def _central_description(tool: str) -> str:
-    os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy")
     import asyncio
     import importlib
     tools = asyncio.run(importlib.import_module("server").mcp.list_tools())
@@ -415,7 +420,6 @@ def _literal_starting(text: str, opening: str) -> str:
 
 
 def _tools() -> dict:
-    os.environ.setdefault("OPENAI_API_KEY", "sk-test-dummy")
     import asyncio
     import importlib
     return {t.name: t for t in asyncio.run(importlib.import_module("server").mcp.list_tools())}
@@ -448,6 +452,7 @@ _DESCRIBED = [("lsfusion_get_guidance", "Read ONE lsFusion"),
               ("lsfusion_retrieve_docs", "Search official lsFusion documentation")]
 
 
+@siblings
 @pytest.mark.parametrize("path", [PLATFORM, PLUGIN_JAVA, PLUGIN_KT], ids=["platform", "plugin-java", "plugin-kotlin"])
 @pytest.mark.parametrize("tool,opening", _DESCRIBED, ids=[t for t, _ in _DESCRIBED])
 def test_proxy_mirrors_the_central_tool_description(path, tool, opening):
@@ -583,6 +588,7 @@ def _kotlin_types(params: str) -> dict[str, str]:
     return types
 
 
+@siblings
 @pytest.mark.parametrize("descriptor,result,fields", [
     ("JSONObject buildRetrieveDocsToolDescriptor(", "JSONObject docItemSchema", RETRIEVE_OUT_NULLABLE),
     ("JSONObject buildReportFeedbackToolDescriptor(", "JSONObject outputSchema", FEEDBACK_OUT_NULLABLE),
@@ -595,6 +601,7 @@ def test_plugin_java_result_schemas_admit_null_where_central_sends_it(descriptor
     assert not bad, f"plugin McpBaseService: result fields central sends as null, declared without null: {bad}"
 
 
+@siblings
 @pytest.mark.parametrize("dto,fields", [
     ("data class RemoteDocItem(", RETRIEVE_OUT_NULLABLE),
     ("data class FeedbackOutput(", FEEDBACK_OUT_NULLABLE),
@@ -615,6 +622,7 @@ def test_central_nullable_results_guard():
     assert {"dedup_fingerprint", "detail"} <= FEEDBACK_OUT_NULLABLE
 
 
+@siblings
 @pytest.mark.parametrize("method", ["retrieveDocsDescriptor", "reportFeedbackDescriptor"],
                          ids=["retrieve_docs", "report_feedback"])
 def test_platform_declares_no_result_schema_for_these_tools(method):

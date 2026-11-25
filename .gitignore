@@ -1,2 +1,7 @@
 # Corpus snapshot mounted by docker-compose.yml; never commit it.
 snapshot/
+
+# Local Python and test artifacts.
+__pycache__/
+.pytest_cache/
+.venv/

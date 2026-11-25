@@ -23,6 +23,7 @@ from fill.versions import (
     PREFIX_VERSION,
     SOURCE_URL_VERSION,
 )
+from tools.tests.siblings import PLATFORM_ROOT, need
 
 
 # ───────────────────────────── tiny helpers ──────────────────────────────────
@@ -362,32 +363,34 @@ def test_code_fence_with_h3_inside_does_not_split(tmp_path):
 # The docs moved to docs/<type>/{en,ru}/ long ago; this pointed at the flat
 # pre-migration layout, so the sample list resolved to nothing and the
 # invariant below silently checked ZERO files. Search the type folders.
-REAL_DOCS = Path(__file__).resolve().parents[3] / "platform" / "docs"
+#
+# The platform checkout is found as the drift guard finds it
+# (tools/tests/siblings.py), and by the same rule: absent by default it skips,
+# missing under an explicitly set root it fails. A sample name that stops
+# resolving is reported per name, rather than dropping out of the list.
+REAL_DOCS = PLATFORM_ROOT / "docs"
+
+# A representative sample, to keep the test runtime bounded.
+REAL_SAMPLES = [
+    "AGGR_operator.md",
+    "Aggregations.md",
+    "How-to_GROUP_SUM.md",
+    "=_statement.md",
+    "IF_..._THEN_operator.md",
+]
 
 
-def _real_md_samples():
-    if not REAL_DOCS.is_dir():
-        return []
-    # Pick a representative sample to keep test runtime bounded.
-    interesting = [
-        "AGGR_operator.md",
-        "Aggregations.md",
-        "How-to_GROUP_SUM.md",
-        "=_statement.md",
-        "IF_..._THEN_operator.md",
-    ]
-    out = []
-    for name in interesting:
-        for p in REAL_DOCS.glob(f"*/en/{name}"):
-            out.append(p)
-            break
-    return out
+def _real_doc(name: str) -> Path:
+    found = sorted(need(REAL_DOCS).glob(f"*/en/{name}"))
+    # Nothing matched: skip or fail by the rule, naming the pattern.
+    return found[0] if found else need(REAL_DOCS / "*" / "en" / name)
 
 
-@pytest.mark.parametrize("path", _real_md_samples(),
-                         ids=lambda p: p.name if hasattr(p, "name") else str(p))
-def test_invariant_no_payload_exceeds_safe_limit(path):
+@pytest.mark.siblings
+@pytest.mark.parametrize("name", REAL_SAMPLES)
+def test_invariant_no_payload_exceeds_safe_limit(name):
     """Real docs: every Section's payload fits in OPENAI_CHUNK_LIMIT tokens."""
+    path = _real_doc(name)
     slug = path.stem
     # Use paradigm as a neutral source_type; the invariant must hold for any.
     sections = chunk_md(path, "paradigm", slug)
@@ -448,10 +451,11 @@ def test_oversized_with_long_heading_path_still_fits(tmp_path):
         assert count_tokens(s.payload) <= OPENAI_CHUNK_LIMIT
 
 
+@pytest.mark.siblings
 def test_real_how_to_doc_produces_task_pairs():
-    p = REAL_DOCS / "How-to_GROUP_SUM.md"
-    if not p.is_file():
-        pytest.skip("real doc not present in this checkout")
+    # It looked for the doc at the flat pre-migration path, so it skipped
+    # everywhere, always.
+    p = need(REAL_DOCS / "how-to" / "en" / "How-to_GROUP_SUM.md")
     sections = chunk_md(p, "how-to", "How-to_GROUP_SUM")
     task_ids = [s.section_id for s in sections if "::task-" in s.section_id]
     # The real doc has at least 3 Task/Solution pairs

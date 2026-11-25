@@ -9,14 +9,11 @@ here, not merely its cached output.
 """
 from __future__ import annotations
 
-import os
 import types
 from pathlib import Path
 
 import numpy as np
 import pytest
-
-os.environ.setdefault("OPENAI_API_KEY", "test-key-unused")
 
 import settings
 import tools.local_index as li

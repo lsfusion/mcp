@@ -7,13 +7,7 @@ assert which branches get searched and how `type` is validated/mapped.
 from __future__ import annotations
 
 import collections
-import os
 import types
-
-# rag_retrieve constructs an OpenAI client at import time; the newer SDK refuses
-# an empty key. Tests never hit the network (`_search_branch` is patched),
-# so a dummy key is enough. Must be set before importing the module.
-os.environ.setdefault("OPENAI_API_KEY", "test-key-unused")
 
 import pytest
 
