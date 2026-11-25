@@ -68,35 +68,56 @@ SignalType = Literal[
 ]
 
 
-# Free-text / list caps (per-field, so a single oversized field is rejected at
-# parse time with a clear error rather than only tripping the global byte cap).
-_TXT = 4000   # long-ish free text (messages, suggestions, excerpts)
+# Caps on free text and lists, per field, so the reason a report is refused
+# names the field rather than only the global byte cap. Each cap is declared
+# once, as `maxLength` / `maxItems` in its field's schema, and _over_limit
+# enforces it by reading that same declaration: the schema a client sees and
+# the check the server runs cannot disagree. The caps that are settings
+# (REPORT_*) can differ per deployment; the schema follows them.
+#
+# Pydantic's own max_length is deliberately not used for them. FastMCP would
+# then refuse an oversized report before the tool runs, as a tool error, and
+# the `reports` stream would never hear of it. This way every report refused
+# for its size gets the same answer, `rejected` with the reason in `detail`,
+# which the tool description tells the agent how to act on, and the same
+# contentless event, which shows how often agents hit a cap and which.
+_TXT = 4000   # long-ish free text (messages, suggestions)
 _SHORT = 2000  # short free text (summaries, queries, expectations)
 _LIST = 30     # list lengths
 
 
+def _chars(n: int) -> dict:
+    return {"maxLength": n}
+
+
+def _items(n: int) -> dict:
+    return {"maxItems": n}
+
+
 class Expectation(BaseModel):
     """What the agent expected vs what lsFusion / a tool actually did."""
-    expected: str = Field(..., max_length=_SHORT, description="What the agent expected (depersonalized).")
-    actual: str = Field(..., max_length=_SHORT, description="What actually happened (depersonalized).")
+    expected: str = Field(..., json_schema_extra=_chars(_SHORT), description="What the agent expected (depersonalized).")
+    actual: str = Field(..., json_schema_extra=_chars(_SHORT), description="What actually happened (depersonalized).")
 
 
 class EvalError(BaseModel):
     """One error the agent hit while running lsFusion code via `eval`."""
-    message: str = Field(..., max_length=_TXT, description="The error text (depersonalized).")
+    message: str = Field(..., json_schema_extra=_chars(_TXT), description="The error text (depersonalized).")
     phase: Literal["syntax", "semantic", "runtime", "unknown"] = Field(
         "unknown", description="Where it surfaced.")
+    # Tighter than the other free text: no source dumps.
     code_excerpt: Optional[str] = Field(
-        None, max_length=_TXT, description="Tiny abstracted snippet if essential — NO full source / project code.")
+        None, json_schema_extra=_chars(REPORT_CODE_EXCERPT_MAX_CHARS),
+        description="Tiny abstracted snippet if essential — NO full source / project code.")
     normalized_message: Optional[str] = Field(
-        None, max_length=_SHORT, description="Optional normalized form (ids/literals stripped) for clustering.")
+        None, json_schema_extra=_chars(_SHORT), description="Optional normalized form (ids/literals stripped) for clustering.")
 
 
 class RetrieveQuery(BaseModel):
     """A `retrieve_docs` query the agent ran while trying to fix the error."""
-    query: str = Field(..., max_length=_SHORT, description="The query text.")
+    query: str = Field(..., json_schema_extra=_chars(_SHORT), description="The query text.")
     returned_sources: Optional[List[str]] = Field(
-        None, max_length=_LIST, description="Doc branches/files it surfaced, if noted.")
+        None, json_schema_extra=_items(_LIST), description="Doc branches/files it surfaced, if noted.")
     usefulness: Optional[Literal["helpful", "irrelevant", "misleading", "incomplete"]] = Field(
         None, description="How useful the result was for this error.")
 
@@ -105,17 +126,17 @@ class Recommendation(BaseModel):
     """The agent's suggested fix — a HINT for triage clustering, not a decision."""
     primary_target: TargetArtifact = Field(..., description="Main artifact to change.")
     secondary_targets: List[TargetArtifact] = Field(
-        default_factory=list, max_length=_LIST, description="Other plausibly-affected artifacts.")
-    suggested_change: str = Field(..., max_length=_TXT, description="Concrete suggestion (depersonalized).")
+        default_factory=list, json_schema_extra=_items(_LIST), description="Other plausibly-affected artifacts.")
+    suggested_change: str = Field(..., json_schema_extra=_chars(_TXT), description="Concrete suggestion (depersonalized).")
     confidence: Literal["low", "medium", "high"] = Field("medium")
-    rationale: Optional[str] = Field(None, max_length=_SHORT, description="Why, briefly.")
+    rationale: Optional[str] = Field(None, json_schema_extra=_chars(_SHORT), description="Why, briefly.")
 
 
 class ToolContext(BaseModel):
     """Typed (not a free dict) so arbitrary agent-supplied keys can't leak."""
     model_config = {"extra": "ignore"}  # drop unknown keys rather than store them
-    eval_server_kind: Optional[str] = Field(None, max_length=100)
-    eval_server_version: Optional[str] = Field(None, max_length=100)
+    eval_server_kind: Optional[str] = Field(None, json_schema_extra=_chars(100))
+    eval_server_version: Optional[str] = Field(None, json_schema_extra=_chars(100))
 
 
 class FeedbackReport(BaseModel):
@@ -123,27 +144,27 @@ class FeedbackReport(BaseModel):
     paths, schema/table/customer names, or secrets — only a doc-improvement
     signal plus public doc references."""
     agent_journey_id: str = Field(
-        ..., max_length=200, description="Agent-generated id grouping this task's errors/queries.")
+        ..., json_schema_extra=_chars(200), description="Agent-generated id grouping this task's errors/queries.")
     signal_type: SignalType = Field(
         ..., description="What kind of reinforcement signal this is (routing hint, not the decision).")
-    problem_summary: str = Field(..., max_length=_SHORT, description="Short depersonalized task description.")
+    problem_summary: str = Field(..., json_schema_extra=_chars(_SHORT), description="Short depersonalized task description.")
     recommendation: Recommendation
     expectation: Optional[Expectation] = Field(
         None, description="For expectation-mismatch/unclear-error: expected vs actual.")
-    eval_errors: List[EvalError] = Field(default_factory=list)
-    retrieve_queries: List[RetrieveQuery] = Field(default_factory=list)
+    eval_errors: List[EvalError] = Field(default_factory=list, json_schema_extra=_items(REPORT_MAX_EVAL_ERRORS))
+    retrieve_queries: List[RetrieveQuery] = Field(default_factory=list, json_schema_extra=_items(REPORT_MAX_QUERIES))
     retrieved_docs_summary: List[str] = Field(
-        default_factory=list, max_length=_LIST,
+        default_factory=list, json_schema_extra=_items(_LIST),
         description="Short PUBLIC summaries of retrieved docs (no chunk bodies).")
     final_outcome: Literal["fixed", "not_fixed", "workaround", "abandoned", "unknown"] = Field(
         "unknown", description="How the task ended (guards against survivorship bias).")
     tool_context: Optional[ToolContext] = Field(None, description="Optional eval-server context.")
     client_dedup_hint: Optional[str] = Field(
-        None, max_length=200, description="Optional agent hint; the SERVER computes the canonical dedup_fingerprint.")
-    lsfusion_version: Optional[str] = Field(None, max_length=100)
-    deployment_kind: Optional[str] = Field(None, max_length=100)
+        None, json_schema_extra=_chars(200), description="Optional agent hint; the SERVER computes the canonical dedup_fingerprint.")
+    lsfusion_version: Optional[str] = Field(None, json_schema_extra=_chars(100))
+    deployment_kind: Optional[str] = Field(None, json_schema_extra=_chars(100))
     agent: Optional[str] = Field(
-        None, max_length=100, description="Reporting agent and model, e.g. 'claude-code, claude-opus-4-5'.")
+        None, json_schema_extra=_chars(100), description="Reporting agent and model, e.g. 'claude-code, claude-opus-4-5'.")
     n_eval_attempts: Optional[int] = None
 
 
@@ -232,17 +253,35 @@ def _byte_len(s: str) -> int:
     return len(s.encode("utf-8"))
 
 
+# Every reason a report is refused for its size says that a part of it "is over
+# its limit": the tool description tells the agent to shorten that part and
+# send the report again, and not to resend on any other reason.
+def _over_limit(m: BaseModel, path: str = "") -> Optional[str]:
+    """The first field of `m`, nested ones included, that is over the cap its
+    schema declares, as a reason naming it; None when none is."""
+    for name, field in type(m).model_fields.items():
+        value, where = getattr(m, name), path + name
+        cap = field.json_schema_extra or {}
+        if isinstance(value, str) and len(value) > cap.get("maxLength", len(value)):
+            return f"`{where}` is over its limit of {cap['maxLength']} characters"
+        if isinstance(value, list) and len(value) > cap.get("maxItems", len(value)):
+            return f"`{where}` is over its limit of {cap['maxItems']} entries"
+        for i, item in enumerate(value if isinstance(value, list) else [value]):
+            if isinstance(item, BaseModel):
+                reason = _over_limit(item, f"{where}[{i}]." if isinstance(value, list) else f"{where}.")
+                if reason:
+                    return reason
+    return None
+
+
 def _reject_reason(report: FeedbackReport) -> Optional[str]:
-    if len(report.eval_errors) > REPORT_MAX_EVAL_ERRORS:
-        return f"too many eval_errors (>{REPORT_MAX_EVAL_ERRORS})"
-    if len(report.retrieve_queries) > REPORT_MAX_QUERIES:
-        return f"too many retrieve_queries (>{REPORT_MAX_QUERIES})"
-    for e in report.eval_errors:
-        if e.code_excerpt and len(e.code_excerpt) > REPORT_CODE_EXCERPT_MAX_CHARS:
-            return f"code_excerpt exceeds {REPORT_CODE_EXCERPT_MAX_CHARS} chars (no source dumps)"
+    reason = _over_limit(report)
+    if reason:
+        return reason
     # Size cap in BYTES (multibyte chars must not slip past a char-count cap).
+    # No schema can say this one, so only the description and this check do.
     if _byte_len(report.model_dump_json()) > REPORT_MAX_TOTAL_CHARS:
-        return f"payload exceeds {REPORT_MAX_TOTAL_CHARS} bytes"
+        return f"the report is over its limit of {REPORT_MAX_TOTAL_CHARS} bytes as UTF-8 JSON"
     return None
 
 
@@ -329,8 +368,8 @@ def report_feedback_tool(report: FeedbackReport) -> FeedbackOutput:
         # Backstop: redaction can grow fields (placeholders) — bound the STORED record too.
         size = _byte_len(json.dumps(red, ensure_ascii=False))
         if size > REPORT_MAX_TOTAL_CHARS:
-            return _rejected(report_id, f"redacted payload exceeds {REPORT_MAX_TOTAL_CHARS} bytes",
-                             size)
+            return _rejected(report_id, f"the report is over its limit of {REPORT_MAX_TOTAL_CHARS} bytes "
+                                        "as UTF-8 JSON once redacted", size)
 
         dedup = _dedup_fingerprint(red)
         if not REPORTS_DIR:

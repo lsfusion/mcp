@@ -191,11 +191,16 @@ ERROR_LOG_MAX_CHARS = int(os.environ.get("ERROR_LOG_MAX_CHARS", "500"))
 # Master switch. Off => the tool returns status="disabled" and stores nothing.
 FEEDBACK_ENABLED = os.environ.get("FEEDBACK_ENABLED", "1").lower() not in ("0", "false", "no", "")
 # Anti-abuse caps (reports from agents are noisy; reject pathological payloads).
+# A report over one is `rejected`. The first three are also the caps the tool's
+# schema declares for `eval_errors`, `retrieve_queries` and `code_excerpt`
+# (tools/feedback.py), and the tool description names all four, so changing one
+# here changes what clients are told as well. The proxies in the platform and
+# the plugin hard-code them, and mcp's drift test fails until they follow.
 REPORT_MAX_EVAL_ERRORS = int(os.environ.get("REPORT_MAX_EVAL_ERRORS", "50"))
 REPORT_MAX_QUERIES = int(os.environ.get("REPORT_MAX_QUERIES", "50"))
 # A single code excerpt longer than this => reject (no source dumps).
 REPORT_CODE_EXCERPT_MAX_CHARS = int(os.environ.get("REPORT_CODE_EXCERPT_MAX_CHARS", "2000"))
-# Total serialized payload cap.
+# Total serialized payload cap, in bytes of UTF-8 JSON.
 REPORT_MAX_TOTAL_CHARS = int(os.environ.get("REPORT_MAX_TOTAL_CHARS", "65536"))
 # Where each recorded report is stored: one JSON file per report in
 # <REPORTS_DIR>/inbox/. A separate worker turns every file into an issue in

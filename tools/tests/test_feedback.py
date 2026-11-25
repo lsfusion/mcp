@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import pytest
 
 import tools.feedback as re_mod
+from settings import REPORT_CODE_EXCERPT_MAX_CHARS, REPORT_MAX_EVAL_ERRORS, REPORT_MAX_QUERIES
 from tools.feedback import (
     STORE_FAILED,
     FeedbackReport,
@@ -295,7 +296,7 @@ def test_log_failure_while_rejecting_does_not_raise(inbox, monkeypatch):
         raise RuntimeError("emit down")
 
     monkeypatch.setattr(re_mod, "emit", boom)
-    monkeypatch.setattr(re_mod, "REPORT_MAX_EVAL_ERRORS", 0)
+    monkeypatch.setattr(re_mod, "REPORT_MAX_TOTAL_CHARS", 10)
     out = report_feedback_tool(_report())
     assert out.status == "rejected" and out.detail == "processing error"
     assert _files(inbox) == []
@@ -401,11 +402,11 @@ def test_disabled_switch(inbox, monkeypatch):
 
 
 def test_rejects_oversized_and_logs_minimal(inbox, monkeypatch):
-    monkeypatch.setattr(re_mod, "REPORT_MAX_EVAL_ERRORS", 2)
     calls = _capture_emit(monkeypatch)
-    rep = _report(eval_errors=[EvalError(message=f"e{i}") for i in range(5)])
+    rep = _report(eval_errors=[EvalError(message=f"e{i}") for i in range(REPORT_MAX_EVAL_ERRORS + 1)])
     out = report_feedback_tool(rep)
-    assert out.status == "rejected" and "eval_errors" in (out.detail or "")
+    assert out.status == "rejected"
+    assert out.detail == f"`eval_errors` is over its limit of {REPORT_MAX_EVAL_ERRORS} entries"
     assert len(calls) == 1 and calls[0]["ok"] is False
     # minimal rejected event carries no user payload
     assert "problem_summary" not in calls[0]["fields"]
@@ -413,30 +414,110 @@ def test_rejects_oversized_and_logs_minimal(inbox, monkeypatch):
     assert _files(inbox) == []
 
 
-def test_rejects_large_code_excerpt(monkeypatch):
-    monkeypatch.setattr(re_mod, "REPORT_CODE_EXCERPT_MAX_CHARS", 10)
-    _capture_emit(monkeypatch)
-    rep = _report(eval_errors=[EvalError(message="oops", code_excerpt="x" * 50)])
-    out = report_feedback_tool(rep)
-    assert out.status == "rejected" and "code_excerpt" in (out.detail or "")
-
-
-def test_rejects_too_many_queries(monkeypatch):
-    monkeypatch.setattr(re_mod, "REPORT_MAX_QUERIES", 2)
-    calls = _capture_emit(monkeypatch)
-    out = report_feedback_tool(_report(retrieve_queries=[RetrieveQuery(query=f"q{i}") for i in range(5)]))
-    assert out.status == "rejected" and "retrieve_queries" in (out.detail or "")
-    assert "problem_summary" not in calls[0]["fields"]  # no payload leak on reject
-
-
 def test_byte_size_cap_counts_bytes(monkeypatch):
     monkeypatch.setattr(re_mod, "REPORT_MAX_TOTAL_CHARS", 80)
     _capture_emit(monkeypatch)
     out = report_feedback_tool(_report(problem_summary="嗨" * 40))  # 40 chars, 120 bytes
-    assert out.status == "rejected" and "bytes" in (out.detail or "")
+    assert out.status == "rejected"
+    assert out.detail == "the report is over its limit of 80 bytes as UTF-8 JSON"
 
 
-def test_oversized_field_rejected_at_parse():
-    import pydantic
-    with pytest.raises(pydantic.ValidationError):
-        _report(problem_summary="x" * 5000)  # exceeds max_length
+# --- the caps the schema declares are the caps the tool enforces -----------------
+#
+# Each cap is declared once, in the field's schema, and the tool enforces it by
+# reading that declaration, not through pydantic: a report over one must come
+# back `rejected` with the field named (which the tool description tells the
+# agent to act on) and leave a contentless `reports` event, never a validation
+# error raised before the tool runs. Every cap is found in the schema, so a new
+# one is covered on the day it is declared.
+
+def _ref(prop: dict) -> tuple[str, bool] | None:
+    """($defs name, whether it is a list of them) of a property holding a
+    nested object, directly or as one branch of its anyOf."""
+    for p in [prop, *(prop.get("anyOf") or [])]:
+        if "$ref" in p:
+            return p["$ref"].rsplit("/", 1)[1], False
+        if "$ref" in (p.get("items") or {}):
+            return p["items"]["$ref"].rsplit("/", 1)[1], True
+    return None
+
+
+def _schema_caps(schema: dict, node: dict | None = None, path: tuple = ()):
+    """(path, `maxLength` or `maxItems`, cap) for every cap declared in a
+    report schema; a path runs from the report to the field, with 0 for the
+    first entry of a list."""
+    node = schema if node is None else node
+    for name, prop in (node.get("properties") or {}).items():
+        for kind in ("maxLength", "maxItems"):
+            if kind in prop:
+                yield path + (name,), kind, prop[kind]
+        ref = _ref(prop)
+        if ref:
+            yield from _schema_caps(schema, schema["$defs"][ref[0]], path + (name,) + ((0,) if ref[1] else ()))
+
+
+REPORT_SCHEMA = FeedbackReport.model_json_schema()
+CAPS = list(_schema_caps(REPORT_SCHEMA))
+
+
+def _full() -> dict:
+    """A report with every field the caps are on, nested objects and list entries included."""
+    return dict(
+        agent_journey_id="j", signal_type="doc-gap", problem_summary="p",
+        recommendation=dict(primary_target="how-to", secondary_targets=["rules"],
+                            suggested_change="s", rationale="r"),
+        expectation=dict(expected="e", actual="a"),
+        eval_errors=[dict(message="m", code_excerpt="c", normalized_message="n")],
+        retrieve_queries=[dict(query="q", returned_sources=["x"])],
+        retrieved_docs_summary=["d"],
+        tool_context=dict(eval_server_kind="k", eval_server_version="v"),
+        client_dedup_hint="h", lsfusion_version="1", deployment_kind="d", agent="a",
+    )
+
+
+def _with(path: tuple, kind: str, size: int) -> FeedbackReport:
+    """The full report with the field at `path` made `size` long. Parsing it
+    must succeed whatever the size: the tool, not pydantic, refuses it."""
+    report = _full()
+    parent = report
+    for key in path[:-1]:
+        parent = parent[key]
+    old = parent[path[-1]]
+    parent[path[-1]] = "x" * size if kind == "maxLength" else [old[0]] * size
+    return FeedbackReport.model_validate(report)
+
+
+def _dotted(path: tuple) -> str:
+    return "".join(f"[{k}]" if isinstance(k, int) else f".{k}" for k in path).lstrip(".")
+
+
+@pytest.mark.parametrize("path,kind,cap", CAPS, ids=[f"{_dotted(p)}-{k}" for p, k, _ in CAPS])
+def test_a_field_over_its_cap_is_rejected_by_the_tool_and_logged(inbox, monkeypatch, path, kind, cap):
+    calls = _capture_emit(monkeypatch)
+    out = report_feedback_tool(_with(path, kind, cap + 1))
+    unit = "characters" if kind == "maxLength" else "entries"
+    assert out.status == "rejected"
+    assert out.detail == f"`{_dotted(path)}` is over its limit of {cap} {unit}"
+    assert [(c["event"], c["ok"], c["fields"]["reason"]) for c in calls] == [("report_feedback", False, out.detail)]
+    assert "x" * (cap + 1) not in json.dumps(calls)  # the event carries no content
+    assert _files(inbox) == []
+
+
+@pytest.mark.parametrize("path,kind,cap", CAPS, ids=[f"{_dotted(p)}-{k}" for p, k, _ in CAPS])
+def test_a_field_at_its_cap_is_recorded(monkeypatch, path, kind, cap):
+    _capture_emit(monkeypatch)
+    assert report_feedback_tool(_with(path, kind, cap)).status == "recorded"
+
+
+def test_the_schema_caps_come_from_the_settings():
+    caps = {_dotted(p): (k, n) for p, k, n in CAPS}
+    assert caps["eval_errors[0].code_excerpt"] == ("maxLength", REPORT_CODE_EXCERPT_MAX_CHARS)
+    assert caps["eval_errors"] == ("maxItems", REPORT_MAX_EVAL_ERRORS)
+    assert caps["retrieve_queries"] == ("maxItems", REPORT_MAX_QUERIES)
+
+
+def test_every_cap_in_the_schema_is_one_the_checks_above_see():
+    # A cap declared anywhere else — on the entries of a list of strings, say —
+    # would be neither enforced by the tool nor checked here or in the proxies.
+    assert len(CAPS) == json.dumps(REPORT_SCHEMA).count('"maxLength"') + json.dumps(REPORT_SCHEMA).count('"maxItems"')
+    assert len(CAPS) > 20

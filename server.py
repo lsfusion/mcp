@@ -95,9 +95,32 @@ def lsfusion_get_guidance(
 
 
 from tools.feedback import report_feedback_tool, FeedbackReport, FeedbackOutput
-@mcp.tool(structured_output=True)
+from settings import (REPORT_CODE_EXCERPT_MAX_CHARS, REPORT_MAX_EVAL_ERRORS,
+                      REPORT_MAX_QUERIES, REPORT_MAX_TOTAL_CHARS)
+
+
+def _size(n: int) -> str:
+    return f"{n // 1024} KiB" if n % 1024 == 0 else f"{n} bytes"
+
+
+# Not a docstring: the limits it names are the ones this server enforces,
+# settings included, so the text is built from them. The consent wording is the
+# workflow rule's (C.5 of the top `rules` article). The proxies copy the text
+# verbatim, numbers and all, and the drift test compares it.
+REPORT_FEEDBACK_DESCRIPTION = (
+    "Submit ONE anonymous, depersonalized reinforcement-quality signal so lsFusion docs / RAG / eval diagnostics / the platform can be improved. "
+    "Use `signal_type` to say what kind: a documentation gap, an expectation-mismatch (you expected lsFusion to behave/mean X but it was actually Y — fill `expectation`), an unclear/unactionable `eval` error, a missing capability, a RAG miss, or other. "
+    "Follow the workflow rule from `lsfusion_get_guidance`: at the end of a task that hit action-affecting friction, OFFER the report in one line instead of silently skipping it, and call this after the user consents (consent may be given in advance, by the user or by the project's rules). One call per finding. "
+    "Send NO source code, file paths, schema/table/customer names, or secrets — only the depersonalized journey (eval errors, the doc queries you tried, expected-vs-actual, how you resolved it) and a recommendation. "
+    "The feedback is a suggestion, not a decision. "
+    f"LIMITS: the schema gives the cap on the length of each text field and list — `code_excerpt` takes at most {REPORT_CODE_EXCERPT_MAX_CHARS} characters, `eval_errors` at most {REPORT_MAX_EVAL_ERRORS} entries, `retrieve_queries` at most {REPORT_MAX_QUERIES} — and the whole report, as UTF-8 JSON, may take at most {_size(REPORT_MAX_TOTAL_CHARS)}. "
+    "Returns `{report_id, status, dedup_fingerprint, detail}`. "
+    "`status` is one of three: `recorded` — the report is stored; `rejected` — it is not, and `detail` says why: when a part of the report is over its limit, shorten that part and send the report again, while any other reason is a problem on the server's side, so do not keep resending; `disabled` — this server takes no reports, so send none."
+)
+
+
+@mcp.tool(structured_output=True, description=REPORT_FEEDBACK_DESCRIPTION)
 def lsfusion_report_feedback(report: FeedbackReport) -> FeedbackOutput:
-    """Submit ONE anonymous, depersonalized reinforcement-quality signal so lsFusion docs / RAG / eval diagnostics / the platform can be improved. Use `signal_type` to say what kind: a documentation gap, an expectation-mismatch (you expected lsFusion to behave/mean X but it was actually Y — fill `expectation`), an unclear/unactionable `eval` error, a missing capability, a RAG miss, or other. Call this ONLY per the workflow rule from `lsfusion_get_guidance` (the friction was action-affecting) AND only after the user explicitly consents. Send NO source code, file paths, schema/table/customer names, or secrets — only the depersonalized journey (eval errors, the doc queries you tried, expected-vs-actual, how you resolved it) and a recommendation. The feedback is a suggestion, not a decision. Returns `{report_id, status, dedup_fingerprint}`."""
     return report_feedback_tool(report)
 
 

@@ -10,7 +10,9 @@ and every central enum value APPEARS there (a coverage/subset check — it catch
 "central added/renamed a field or enum value, proxy forgot it", the drift that
 actually bites). Reverse drift (proxy keeps a field central dropped) is
 checked only where it breaks a call: see "reverse drift" and "what a released
-plugin depends on" below.
+plugin depends on" below. Names do not catch a stale text or a wrong number,
+so the tool descriptions are compared word for word, and the numbers the
+proxies hard-code (the batch cap, the caps on a feedback report) by value.
 
 The checks that read the proxies carry the `siblings` mark and find the sibling
 checkouts through tools/tests/siblings.py: next to mcp by default, as in the
@@ -456,8 +458,13 @@ def _expected(tool: str, path) -> str:
     return text
 
 
+# report_feedback joined late: the proxies' copies had drifted apart, and the
+# central one and the plugin's still asked for explicit consent after the
+# workflow rule had moved to offering the report. Its text also names the
+# central limits, so a limit that changes fails here until each proxy names it.
 _DESCRIBED = [("lsfusion_get_guidance", "Read ONE lsFusion"),
-              ("lsfusion_retrieve_docs", "Search official lsFusion documentation")]
+              ("lsfusion_retrieve_docs", "Search official lsFusion documentation"),
+              ("lsfusion_report_feedback", "Submit ONE anonymous")]
 
 
 @siblings
@@ -576,7 +583,18 @@ def _kotlin_types(params: str) -> dict[str, str]:
 def _kotlin_vals(params: str) -> dict[str, tuple[str, str | None]]:
     """(type, default or None) of each `val` in a constructor's parameter list,
     by its wire name: its @SerialName, else its own."""
-    vals, depth, start, i = {}, 0, 0, 0
+    vals = {}
+    for wire, piece, val in _kotlin_params(params):
+        type_, eq, default = piece[val.end():].partition("=")
+        vals[wire] = (type_.strip(), default.strip() if eq else None)
+    return vals
+
+
+def _kotlin_params(params: str):
+    """(wire name, the parameter's code without comments, the match of its
+    `val <name>:`) for each `val` in a constructor's parameter list; the wire
+    name is its @SerialName, else its own."""
+    depth, start, i = 0, 0, 0
     pieces = []
     while i < len(params):
         j = _skip_literal(params, i)
@@ -598,9 +616,7 @@ def _kotlin_vals(params: str) -> dict[str, tuple[str, str | None]]:
         val = re.search(r"\bval\s+(\w+)\s*:", piece)
         if val:
             wire = re.search(r'@SerialName\("([^"]+)"\)', piece[:val.start()])
-            type_, eq, default = piece[val.end():].partition("=")
-            vals[wire.group(1) if wire else val.group(1)] = (type_.strip(), default.strip() if eq else None)
-    return vals
+            yield wire.group(1) if wire else val.group(1), piece, val
 
 
 @siblings
@@ -781,9 +797,9 @@ def _java_input(java: str, descriptor: str) -> str:
     return _code(region[:region.index(stmt) + len(stmt)])
 
 
-def _java_object(java: str, descriptor: str, var: str) -> dict[str, str]:
+def _java_object(java: str, descriptor: str, var: str, who: str = "plugin McpBaseService") -> dict[str, str]:
     stmt = _statement(_brace_slice(java, descriptor), var)
-    assert stmt is not None, f"plugin McpBaseService: {descriptor} has no {var!r}"
+    assert stmt is not None, f"{who}: {descriptor} has no {var!r}"
     return _put_args(_code(stmt))
 
 
@@ -943,3 +959,110 @@ def test_central_released_contract_guard():
     assert {"recorded", "disabled", "rejected"} <= _enum_values(fb.outputSchema["properties"]["status"])
     assert {"docs", "status"} <= set(_central_result("lsfusion_retrieve_docs", None)["properties"])
     assert {"id", "source", "text"} <= set(_central_result("lsfusion_retrieve_docs", "DocItem")["properties"])
+
+
+# --- report_feedback caps -------------------------------------------------------
+#
+# Central declares a cap on each text field and list of a report (`maxLength` /
+# `maxItems` in its schema, tools/feedback.py) and refuses a report over one.
+# The checks above compare names, so a proxy could name no cap, or a different
+# one, and stay green: then a client is promised a report the server refuses,
+# or refused one it takes. So each proxy names exactly central's caps: the
+# platform and the plugin's REST endpoint in their schemas, as central does;
+# the plugin's Kotlin toolset in words, in each field's description, because
+# the schema the IDE's MCP server builds from its DTOs has no `maxLength` or
+# `maxItems` (nor `default`, which those descriptions state as well). The
+# value is the one central would enforce in this run, settings included, so a
+# cap changed centrally fails here until every proxy names the new one. Not
+# `released`: 1.0.316 names no caps, and a report it lets through over one is
+# refused with a reason the agent can act on.
+from settings import REPORT_CODE_EXCERPT_MAX_CHARS, REPORT_MAX_EVAL_ERRORS, REPORT_MAX_QUERIES
+
+_CAP_KINDS = ("maxLength", "maxItems")
+_KOTLIN_CAP = re.compile(r"\bAt most (\d+) (characters|entries)\b")
+
+
+def _caps_of(prop: dict) -> list[tuple[str, int]]:
+    """The caps on a property itself: at its top level or in a branch of its anyOf."""
+    return [(k, p[k]) for p in [prop, *(prop.get("anyOf") or [])] for k in _CAP_KINDS if k in p]
+
+
+def _central_report_caps() -> dict[str | None, dict[str, list]]:
+    """The caps of each object of central's report schema, by field: None for
+    the report itself, else its $defs name."""
+    schema = FeedbackReport.model_json_schema()
+    return {d: {f: c for f, p in (m.get("properties") or {}).items() if (c := _caps_of(p))}
+            for d, m in [(None, schema), *(schema.get("$defs") or {}).items()]}
+
+
+REPORT_CAPS = _central_report_caps()
+
+
+def _cap_diff(found: dict, who: str) -> str:
+    """Each field whose caps in `found` (by object, then field) are not central's."""
+    bad = []
+    for obj, central in REPORT_CAPS.items():
+        mine = found.get(obj, {})
+        for f in sorted(set(central) | set(mine)):
+            if sorted(central.get(f, [])) != sorted(mine.get(f, [])):
+                bad.append(f"{obj or 'report'}.{f}: central {central.get(f, [])}, {who} {mine.get(f, [])}")
+    return "; ".join(bad)
+
+
+def _java_report_caps(java: str, descriptor: str, who: str) -> dict:
+    """The caps a Java descriptor puts on each property of each report object.
+    Its objects are named after central's: `report`, and the $defs name in
+    lower camel case (`evalError`)."""
+    out = {}
+    for obj in REPORT_CAPS:
+        var = "report" if obj is None else obj[0].lower() + obj[1:]
+        props = _java_properties(_java_object(java, descriptor, f"JSONObject {var} =", who), who)
+        out[obj] = {f: c for f, v in props.items()
+                    if (c := [(k, int(n)) for k, n in _put_args(v).items() if k in _CAP_KINDS])}
+    return out
+
+
+def _kotlin_report_caps(kotlin: str) -> dict:
+    """The caps each Kotlin report DTO states in its fields' descriptions."""
+    out = {}
+    for obj in REPORT_CAPS:
+        dto = "data class FeedbackReportInput(" if obj is None else f"data class Fb{obj}("
+        params = _call_args(kotlin, dto)
+        assert params is not None, f"plugin McpToolset: no {dto}"
+        out[obj] = {}
+        for wire, piece, val in _kotlin_params(params):
+            desc = re.search(r'@property:McpDescription\(\s*description\s*=\s*"((?:[^"\\]|\\.)*)"', piece[:val.start()])
+            caps = [("maxLength" if unit == "characters" else "maxItems", int(n))
+                    for n, unit in _KOTLIN_CAP.findall(desc.group(1) if desc else "")]
+            if caps:
+                out[obj][wire] = caps
+    return out
+
+
+@siblings
+def test_platform_report_caps_are_central_caps():
+    who = "platform MCPDispatcher"
+    bad = _cap_diff(_java_report_caps(_need(PLATFORM), "JSONObject reportFeedbackDescriptor(", who), who)
+    assert not bad, f"report_feedback caps differ: {bad}"
+
+
+@siblings
+def test_plugin_java_report_caps_are_central_caps():
+    who = "plugin McpBaseService"
+    bad = _cap_diff(_java_report_caps(_need(PLUGIN_JAVA), "JSONObject buildReportFeedbackToolDescriptor(", who), who)
+    assert not bad, f"report_feedback caps differ: {bad}"
+
+
+@siblings
+def test_plugin_kotlin_states_central_report_caps_in_words():
+    bad = _cap_diff(_kotlin_report_caps(_need(PLUGIN_KT)), "plugin McpToolset")
+    assert not bad, f"report_feedback caps differ (`At most <n> characters|entries` in a field's description): {bad}"
+
+
+def test_central_report_caps_guard():
+    # An empty set would turn the three checks above green without checking
+    # anything; these three caps are the settings.
+    assert sum(map(len, REPORT_CAPS.values())) > 20
+    assert REPORT_CAPS["EvalError"]["code_excerpt"] == [("maxLength", REPORT_CODE_EXCERPT_MAX_CHARS)]
+    assert REPORT_CAPS[None]["eval_errors"] == [("maxItems", REPORT_MAX_EVAL_ERRORS)]
+    assert REPORT_CAPS[None]["retrieve_queries"] == [("maxItems", REPORT_MAX_QUERIES)]
